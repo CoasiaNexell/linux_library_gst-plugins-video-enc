@@ -484,6 +484,7 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 	param.enableAUDelimiter  = 0;
 	param.imgFormat          = nxvideoenc->imgFormat;
 	param.imgBufferNum       = nxvideoenc->imgBufferNum;
+	param.imgPlaneNum        = (nxvideoenc->buffer_type == MM_VIDEO_BUFFER_TYPE_GEM) ? 1 : 3;
 
 	nxvideoenc->enc = NX_V4l2EncOpen( nxvideoenc->codec );
 	if( NULL == nxvideoenc->enc )
