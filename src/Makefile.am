@@ -16,7 +16,8 @@ libgstnxvideoenc_la_SOURCES = gstnxvideoenc.c
 # compiler and linker flags used to compile this plugin, set in configure.ac
 libgstnxvideoenc_la_CFLAGS =\
 	$(GST_CFLAGS)			\
-	-I../../sysroot/include
+	-I../../sysroot/include	\
+	-I../../sysroot/include/libdrm
 
 libgstnxvideoenc_la_LIBADD = \
 	$(GST_LIBS)			\

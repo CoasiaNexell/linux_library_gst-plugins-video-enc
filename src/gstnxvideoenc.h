@@ -49,6 +49,7 @@ struct _GstNxvideoenc
 
 	NX_V4L2ENC_HANDLE enc;
 	NX_VID_MEMORY_HANDLE inbuf[MAX_INPUT_BUFFER];
+	int drm_fd;
 	guint buf_index;
 	gint buffer_type;
 

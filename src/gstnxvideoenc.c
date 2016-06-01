@@ -41,17 +41,21 @@
 #include <videodev2_nxp_media.h>
 #include <linux/videodev2.h>
 
+#include <stdlib.h>
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 
-#include <nx_video_alloc.h>
-#include <libdrm/drm_fourcc.h>
+#include <xf86drm.h>
+#include <xf86drmMode.h>
+#include <drm/drm_fourcc.h>
+#include <nexell/nexell_drm.h>
 #include <mm_types.h>
 
-#include "gstnxvideoenc.h"
+#include <nx_video_alloc.h>
 
-// #define TEMPERARY_SUPPORT_CAMERA
+#include "gstnxvideoenc.h"
 
 GST_DEBUG_CATEGORY_STATIC (gst_nxvideoenc_debug_category);
 #define GST_CAT_DEFAULT gst_nxvideoenc_debug_category
@@ -233,8 +237,9 @@ gst_nxvideoenc_init( GstNxvideoenc *nxvideoenc )
 	nxvideoenc->init               = FALSE;
 	nxvideoenc->buf_index          = 0;
 	nxvideoenc->buffer_type        = -1;
+	nxvideoenc->drm_fd             = -1;
 
-	for( i = 0; i < MAX_ALLOC_BUFFER; i++ )
+	for( i = 0; i < MAX_INPUT_BUFFER; i++ )
 	{
 		nxvideoenc->inbuf[i] = NULL;
 	}
@@ -399,16 +404,36 @@ static gboolean
 gst_nxvideoenc_stop( GstVideoEncoder *encoder )
 {
 	GstNxvideoenc *nxvideoenc = GST_NXVIDEOENC (encoder);
-	gint i;
+	gint i, j;
 
 	GST_DEBUG_OBJECT(nxvideoenc, "stop");
 
-	for( i = 0 ; i < MAX_ALLOC_BUFFER; i++ )
+	if( MM_VIDEO_BUFFER_TYPE_GEM != nxvideoenc->buffer_type )
 	{
-		if( NULL != nxvideoenc->inbuf[i] )
+		for( i = 0 ; i < MAX_ALLOC_BUFFER; i++ )
 		{
-			NX_FreeVideoMemory( nxvideoenc->inbuf[i] );
-			nxvideoenc->inbuf[i] = NULL;
+			if( NULL != nxvideoenc->inbuf[i] )
+			{
+				NX_FreeVideoMemory( nxvideoenc->inbuf[i] );
+				nxvideoenc->inbuf[i] = NULL;
+			}
+		}
+	}
+	else
+	{
+		for( i = 0; i < MAX_INPUT_BUFFER; i++ )
+		{
+			if( NULL != nxvideoenc->inbuf[i] )
+			{
+				for( j = 0; j < nxvideoenc->inbuf[i]->planes; j++ )
+				{
+					close( nxvideoenc->inbuf[i]->gemFd[j] );
+					close( nxvideoenc->inbuf[i]->dmaFd[j] );
+				}
+
+				free( nxvideoenc->inbuf[i] );
+				nxvideoenc->inbuf[i] = NULL;
+			}
 		}
 	}
 
@@ -422,6 +447,12 @@ gst_nxvideoenc_stop( GstVideoEncoder *encoder )
 	{
 		gst_video_codec_state_unref( nxvideoenc->input_state );
 		nxvideoenc->input_state = NULL;
+	}
+
+	if( 0 <= nxvideoenc->drm_fd );
+	{
+		close( nxvideoenc->drm_fd );
+		nxvideoenc->drm_fd = -1;
 	}
 
 	return TRUE;
@@ -441,7 +472,6 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 	gint ret = FALSE;
 
 	GstVideoCodecState *output_state;
-	NX_V4L2ENC_PARA param;
 
 	GST_DEBUG_OBJECT(nxvideoenc, "set_format");
 
@@ -466,66 +496,8 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 		return FALSE;
 	}
 
-	param.width              = nxvideoenc->width;
-	param.height             = nxvideoenc->height;
-	param.keyFrmInterval     = nxvideoenc->keyFrmInterval ? (nxvideoenc->keyFrmInterval) : (nxvideoenc->fpsNum / nxvideoenc->fpsDen);
-	param.fpsNum             = nxvideoenc->fpsNum;
-	param.fpsDen             = nxvideoenc->fpsDen;
-	param.profile            = (nxvideoenc->codec == V4L2_PIX_FMT_H263) ? V4L2_MPEG_VIDEO_H263_PROFILE_P3 : 0;
-	param.bitrate            = nxvideoenc->bitrate;
-	param.maximumQp          = nxvideoenc->maximumQp;
-	param.disableSkip        = 0;
-	param.RCDelay            = 0;
-	param.rcVbvSize          = 0;
-	param.gammaFactor        = 0;
-	param.initialQp          = nxvideoenc->initialQp;
-	param.numIntraRefreshMbs = 0;
-	param.searchRange        = 0;
-	param.enableAUDelimiter  = 0;
-	param.imgFormat          = nxvideoenc->imgFormat;
-	param.imgBufferNum       = nxvideoenc->imgBufferNum;
-	param.imgPlaneNum        = (nxvideoenc->buffer_type == MM_VIDEO_BUFFER_TYPE_GEM) ? 1 : 3;
+	nxvideoenc->drm_fd = open( "/dev/dri/card0", O_RDWR );
 
-	nxvideoenc->enc = NX_V4l2EncOpen( nxvideoenc->codec );
-	if( NULL == nxvideoenc->enc )
-	{
-		GST_ERROR("Fail, NX_V4l2EncOpen().\n");
-		return FALSE;
-	}
-
-	if( 0 > NX_V4l2EncInit( nxvideoenc->enc, &param ) )
-	{
-		GST_ERROR("Fail, NX_V4l2EncInit().\n");
-		NX_V4l2EncClose( nxvideoenc->enc );
-		nxvideoenc->enc = NULL;
-
-		return FALSE;
-	}
-
-#ifdef TEMPERARY_SUPPORT_CAMERA
-	for( i = 0;  i < MAX_ALLOC_BUFFER; i++ )
-	{
-		nxvideoenc->inbuf[i] = NX_AllocateVideoMemory(
-			nxvideoenc->width,
-			nxvideoenc->height,
-			(nxvideoenc->imgFormat == V4L2_PIX_FMT_YUV420M) ? 3 : 2,
-			DRM_FORMAT_YUV420,
-			4096
-		);
-
-		if( NULL == nxvideoenc->inbuf[i] )
-		{
-			GST_ERROR("Fail, NX_AllocateVideoMemory().\n");
-			return FALSE;
-		}
-
-		if( 0 != NX_MapVideoMemory( nxvideoenc->inbuf[i] ) )
-		{
-			GST_ERROR("Fail, NX_MapVideoMemory().\n");
-			return FALSE;
-		}
-	}
-#else
 	if( MM_VIDEO_BUFFER_TYPE_GEM != nxvideoenc->buffer_type )
 	{
 		for( i = 0;  i < MAX_ALLOC_BUFFER; i++ )
@@ -550,8 +522,12 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 				return FALSE;
 			}
 		}
+		nxvideoenc->imgBufferNum = MAX_ALLOC_BUFFER;
 	}
-#endif
+	else
+	{
+		nxvideoenc->imgBufferNum = MAX_INPUT_BUFFER;
+	}
 
 	//
 	// Configuration Output Caps
@@ -590,16 +566,6 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 
 	if( ret == FALSE )
 	{
-#ifdef TEMPERARY_SUPPORT_CAMERA
-		for( i = 0;  i < MAX_ALLOC_BUFFER; i++ )
-		{
-			if( NULL != nxvideoenc->inbuf[i] )
-			{
-				NX_FreeVideoMemory( nxvideoenc->inbuf[i] );
-				nxvideoenc->inbuf[i] = NULL;
-			}
-		}
-#else
 		if( MM_VIDEO_BUFFER_TYPE_GEM != nxvideoenc->buffer_type )
 		{
 			for( i = 0;  i < MAX_ALLOC_BUFFER; i++ )
@@ -611,7 +577,7 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 				}
 			}
 		}
-#endif
+
 		if( NULL != nxvideoenc->enc )
 		{
 			NX_V4l2EncClose( nxvideoenc->enc );
@@ -628,8 +594,6 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 	return ret;
 }
 
-#ifdef TEMPERARY_SUPPORT_CAMERA
-#else
 static void
 copy_to_videomemory( GstVideoFrame *pInframe, NX_VID_MEMORY_INFO *pImage )
 {
@@ -662,7 +626,43 @@ copy_to_videomemory( GstVideoFrame *pInframe, NX_VID_MEMORY_INFO *pImage )
 		}
 	}
 }
-#endif
+
+static int drm_ioctl( int fd, unsigned long request, void *arg )
+{
+	int ret;
+
+	do {
+		ret = ioctl(fd, request, arg);
+	} while (ret == -1 && (errno == EINTR || errno == EAGAIN));
+
+	return ret;
+}
+
+static int gem_to_dmafd(int fd, int gem_fd)
+{
+	int ret;
+	struct drm_prime_handle arg = {0, };
+
+	arg.handle = gem_fd;
+	ret = drm_ioctl(fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &arg);
+	if (0 != ret)
+		return -1;
+
+	return arg.fd;
+}
+
+static int import_gem_from_flink( int fd, unsigned int flink_name )
+{
+	struct drm_gem_open arg = { 0, };
+	/* struct nx_drm_gem_info info = { 0, }; */
+
+	arg.name = flink_name;
+	if (drm_ioctl(fd, DRM_IOCTL_GEM_OPEN, &arg)) {
+		return -EINVAL;
+	}
+
+	return arg.handle;
+}
 
 static GstFlowReturn
 gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame )
@@ -685,83 +685,6 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 
 	gst_video_codec_frame_ref( frame );
 
-	if( FALSE == nxvideoenc->init )
-	{
-		NX_V4l2EncGetSeqInfo( nxvideoenc->enc, &pSeqBuf, &iSeqSize );
-		nxvideoenc->init = TRUE;
-	}
-
-#ifdef TEMPERARY_SUPPORT_CAMERA
-	memset(&in_info, 0, sizeof(GstMapInfo));
-	meta_block = gst_buffer_peek_memory( frame->input_buffer, 0 );
-
-	if( !meta_block )
-	{
-		GST_ERROR("Fail, gst_buffer_peek_memory().\n");
-		return GST_FLOW_ERROR;
-	}
-
-	gst_memory_map(meta_block, &in_info, GST_MAP_READ);
-	mm_buf = (MMVideoBuffer*)in_info.data;
-	if( !mm_buf )
-	{
-		GST_ERROR("Fail, get MMVideoBuffer.\n");
-		return GST_FLOW_ERROR;
-	}
-	else
-	{
-		gint i = 0;
-		guint offset = 0;
-
-		GST_DEBUG_OBJECT( nxvideoenc, "type: 0x%x, width: %d, height: %d, plane_num: %d, handle_num: %d, index: %d\n",
-				mm_buf->type, mm_buf->width[0], mm_buf->height[0], mm_buf->plane_num, mm_buf->handle_num, mm_buf->buffer_index );
-
-
-		for( i = 0; i < 3; i++ )
-		{
-			memcpy( nxvideoenc->inbuf[nxvideoenc->buf_index]->pBuffer[i],
-				mm_buf->data[0] + offset,
-				nxvideoenc->inbuf[nxvideoenc->buf_index]->size[i] );
-
-			offset += nxvideoenc->inbuf[nxvideoenc->buf_index]->size[i];
-		}
-
-		memset( &encIn, 0x00, sizeof(encIn) );
-		encIn.pImage          = nxvideoenc->inbuf[nxvideoenc->buf_index];
-		encIn.imgIndex        = nxvideoenc->buf_index;
-		encIn.forcedIFrame    = 0;
-		encIn.forcedSkipFrame = 0;
-		encIn.quantParam      = (nxvideoenc->codec == V4L2_PIX_FMT_H264) ? nxvideoenc->initialQp : 10;	// FIX ME!!!
-
-		nxvideoenc->buf_index = (nxvideoenc->buf_index + 1) % MAX_ALLOC_BUFFER;
-
-		if( 0 > NX_V4l2EncEncodeFrame( nxvideoenc->enc, &encIn, &encOut ) )
-		{
-			GST_ERROR("Fail, NX_V4l2EncEncodeFrame().\n");
-			return GST_FLOW_ERROR;
-		}
-
-		frame->output_buffer = gst_video_encoder_allocate_output_buffer( encoder, iSeqSize + encOut.strmSize );
-		gst_buffer_map( frame->output_buffer, &out_info, GST_MAP_WRITE );
-
-		if( 0 < iSeqSize ) memcpy( out_info.data, pSeqBuf, iSeqSize );
-		memcpy( out_info.data + iSeqSize, encOut.strmBuf, encOut.strmSize );
-		out_info.size += iSeqSize + encOut.strmSize;
-
-		if( PIC_TYPE_I == encOut.frameType )
-		{
-			GST_VIDEO_CODEC_FRAME_SET_SYNC_POINT( frame );
-		}
-		else
-		{
-			GST_VIDEO_CODEC_FRAME_UNSET_SYNC_POINT( frame );
-		}
-
-		gst_buffer_unmap( frame->output_buffer, &out_info );
-	}
-
-	gst_memory_unmap( meta_block, &in_info );
-#else
 	if( MM_VIDEO_BUFFER_TYPE_GEM == nxvideoenc->buffer_type )
 	{
 		memset(&in_info, 0, sizeof(GstMapInfo));
@@ -783,20 +706,88 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 			GST_DEBUG_OBJECT( nxvideoenc, "type: 0x%x, width: %d, height: %d, plane_num: %d, handle_num: %d, index: %d\n",
 					mm_buf->type, mm_buf->width[0], mm_buf->height[0], mm_buf->plane_num, mm_buf->handle_num, mm_buf->buffer_index );
 
-			//
-			// Due To..
-			// Encoding Acceleration
-			//
+			if( FALSE == nxvideoenc->init )
+			{
+				NX_V4L2ENC_PARA param;
+				memset( &param, 0x00, sizeof(NX_V4L2ENC_PARA) );
+
+				param.width              = nxvideoenc->width;
+				param.height             = nxvideoenc->height;
+				param.keyFrmInterval     = nxvideoenc->keyFrmInterval ? (nxvideoenc->keyFrmInterval) : (nxvideoenc->fpsNum / nxvideoenc->fpsDen);
+				param.fpsNum             = nxvideoenc->fpsNum;
+				param.fpsDen             = nxvideoenc->fpsDen;
+				param.profile            = (nxvideoenc->codec == V4L2_PIX_FMT_H263) ? V4L2_MPEG_VIDEO_H263_PROFILE_P3 : 0;
+				param.bitrate            = nxvideoenc->bitrate;
+				param.maximumQp          = nxvideoenc->maximumQp;
+				param.disableSkip        = 0;
+				param.RCDelay            = 0;
+				param.rcVbvSize          = 0;
+				param.gammaFactor        = 0;
+				param.initialQp          = nxvideoenc->initialQp;
+				param.numIntraRefreshMbs = 0;
+				param.searchRange        = 0;
+				param.enableAUDelimiter  = 0;
+				param.imgFormat          = nxvideoenc->imgFormat;
+				param.imgBufferNum       = nxvideoenc->imgBufferNum;
+				param.imgPlaneNum        = mm_buf->handle_num;
+
+				nxvideoenc->enc = NX_V4l2EncOpen( nxvideoenc->codec );
+				if( NULL == nxvideoenc->enc )
+				{
+					GST_ERROR("Fail, NX_V4l2EncOpen().\n");
+					return FALSE;
+				}
+
+				if( 0 > NX_V4l2EncInit( nxvideoenc->enc, &param ) )
+				{
+					GST_ERROR("Fail, NX_V4l2EncInit().\n");
+					NX_V4l2EncClose( nxvideoenc->enc );
+					nxvideoenc->enc = NULL;
+
+					return FALSE;
+				}
+
+				NX_V4l2EncGetSeqInfo( nxvideoenc->enc, &pSeqBuf, &iSeqSize );
+				nxvideoenc->init = TRUE;
+			}
+
+			if( NULL == nxvideoenc->inbuf[mm_buf->buffer_index] )
+			{
+				gint i;
+				nxvideoenc->inbuf[mm_buf->buffer_index] = (NX_VID_MEMORY_INFO*)malloc( sizeof(NX_VID_MEMORY_INFO) );
+				memset( nxvideoenc->inbuf[mm_buf->buffer_index], 0, sizeof(NX_VID_MEMORY_INFO) );
+
+				nxvideoenc->inbuf[mm_buf->buffer_index]->width      = mm_buf->width[0];
+				nxvideoenc->inbuf[mm_buf->buffer_index]->height     = mm_buf->height[0];
+				nxvideoenc->inbuf[mm_buf->buffer_index]->planes     = mm_buf->handle_num;
+				nxvideoenc->inbuf[mm_buf->buffer_index]->format     = V4L2_PIX_FMT_YUV420M;
+
+				for( i = 0; i < mm_buf->handle_num; i++ )
+				{
+					nxvideoenc->inbuf[mm_buf->buffer_index]->size[i]    = mm_buf->size[i];
+					nxvideoenc->inbuf[mm_buf->buffer_index]->pBuffer[i] = mm_buf->data[i];
+					nxvideoenc->inbuf[mm_buf->buffer_index]->gemFd[i]   = import_gem_from_flink( nxvideoenc->drm_fd, mm_buf->handle.gem[i] );
+					nxvideoenc->inbuf[mm_buf->buffer_index]->dmaFd[i]   = gem_to_dmafd( nxvideoenc->drm_fd, nxvideoenc->inbuf[mm_buf->buffer_index]->gemFd[i] );
+				}
+
+				for( i = 0; i < mm_buf->plane_num; i++ )
+				{
+					nxvideoenc->inbuf[mm_buf->buffer_index]->stride[i]  = mm_buf->stride_width[i];
+				}
+			}
+
 			memset( &encIn, 0x00, sizeof(encIn) );
-			// encIn.pImage          = nxvideoenc->inbuf[nxvideoenc->buf_index];
-			// encIn.imgIndex        = nxvideoenc->buf_index;
-			// encIn.forcedIFrame    = 0;
-			// encIn.forcedSkipFrame = 0;
-			// encIn.quantParam      = (nxvideoenc->codec == V4L2_PIX_FMT_H264) ? nxvideoenc->initialQp : 10;	// FIX ME!!!
+			encIn.pImage          = nxvideoenc->inbuf[mm_buf->buffer_index];
+			encIn.imgIndex        = mm_buf->buffer_index;
+			encIn.timeStamp       = 0;
+			encIn.forcedIFrame    = 0;
+			encIn.forcedSkipFrame = 0;
+			encIn.quantParam      = (nxvideoenc->codec == V4L2_PIX_FMT_H264) ? nxvideoenc->initialQp : 10;	// FIX ME!!!
 
 			if( 0 > NX_V4l2EncEncodeFrame( nxvideoenc->enc, &encIn, &encOut ) )
 			{
 				GST_ERROR("Fail, NX_V4l2EncEncodeFrame().\n");
+				gst_video_codec_frame_unref( frame );
 				return GST_FLOW_ERROR;
 			}
 
@@ -822,6 +813,51 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 	}
 	else
 	{
+		if( FALSE == nxvideoenc->init )
+		{
+			NX_V4L2ENC_PARA param;
+			memset( &param, 0x00, sizeof(NX_V4L2ENC_PARA) );
+
+			param.width              = nxvideoenc->width;
+			param.height             = nxvideoenc->height;
+			param.keyFrmInterval     = nxvideoenc->keyFrmInterval ? (nxvideoenc->keyFrmInterval) : (nxvideoenc->fpsNum / nxvideoenc->fpsDen);
+			param.fpsNum             = nxvideoenc->fpsNum;
+			param.fpsDen             = nxvideoenc->fpsDen;
+			param.profile            = (nxvideoenc->codec == V4L2_PIX_FMT_H263) ? V4L2_MPEG_VIDEO_H263_PROFILE_P3 : 0;
+			param.bitrate            = nxvideoenc->bitrate;
+			param.maximumQp          = nxvideoenc->maximumQp;
+			param.disableSkip        = 0;
+			param.RCDelay            = 0;
+			param.rcVbvSize          = 0;
+			param.gammaFactor        = 0;
+			param.initialQp          = nxvideoenc->initialQp;
+			param.numIntraRefreshMbs = 0;
+			param.searchRange        = 0;
+			param.enableAUDelimiter  = 0;
+			param.imgFormat          = nxvideoenc->imgFormat;
+			param.imgBufferNum       = nxvideoenc->imgBufferNum;
+			param.imgPlaneNum        = 3;
+
+			nxvideoenc->enc = NX_V4l2EncOpen( nxvideoenc->codec );
+			if( NULL == nxvideoenc->enc )
+			{
+				GST_ERROR("Fail, NX_V4l2EncOpen().\n");
+				return FALSE;
+			}
+
+			if( 0 > NX_V4l2EncInit( nxvideoenc->enc, &param ) )
+			{
+				GST_ERROR("Fail, NX_V4l2EncInit().\n");
+				NX_V4l2EncClose( nxvideoenc->enc );
+				nxvideoenc->enc = NULL;
+
+				return FALSE;
+			}
+
+			NX_V4l2EncGetSeqInfo( nxvideoenc->enc, &pSeqBuf, &iSeqSize );
+			nxvideoenc->init = TRUE;
+		}
+
 		if( !gst_video_frame_map( &inframe, &nxvideoenc->input_state->info, frame->input_buffer, GST_MAP_READ ) )
 		{
 			gst_video_codec_frame_unref( frame );
@@ -841,6 +877,7 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 		if( 0 > NX_V4l2EncEncodeFrame( nxvideoenc->enc, &encIn, &encOut ) )
 		{
 			GST_ERROR("Fail, NX_V4l2EncEncodeFrame().\n");
+			gst_video_codec_frame_unref( frame );
 			return GST_FLOW_ERROR;
 		}
 
@@ -863,7 +900,7 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 		gst_buffer_unmap( frame->output_buffer, &out_info );
 		gst_video_frame_unmap( &inframe );
 	}
-#endif
+
 	gst_video_codec_frame_unref( frame );
 
 	return gst_video_encoder_finish_frame( encoder, frame );
