@@ -103,7 +103,9 @@ static GstStaticPadTemplate gst_nxvideoenc_sink_template =
 		GST_PAD_ALWAYS,
 		GST_STATIC_CAPS(
 			"video/x-raw, "
-			"format =(string) I420"
+			"format =(string) I420; "
+
+			"video/x-raw, accelerable = (boolean) true; "
 		)
 	);
 
@@ -115,14 +117,14 @@ static GstStaticPadTemplate gst_nxvideoenc_src_template =
 			"video/x-h264, "
 			"width = (int) [ 64, 1920 ], "
 			"height = (int) [ 64, 1088 ], "
-			"framerate=(fraction)[ 0/1, 30/1 ], "
-			"stream-format=(string)byte-stream, "
-			"alignment=(string)au; "
+			"framerate = (fraction) [ 0/1, 30/1 ], "
+			"stream-format = (string) byte-stream, "
+			"alignment = (string) au; "
 
 			"video/x-h263, "
 			"width = (int) [ 64, 1920 ], "
 			"height = (int) [ 64, 1088 ], "
-			"framerate=(fraction)[ 0/1, 30/1 ]; "
+			"framerate = (fraction) [ 0/1, 30/1 ]; "
 
 			"video/mpeg, "
 			"width = (int) [ 64, 1920 ], "
