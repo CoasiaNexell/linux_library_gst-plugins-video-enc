@@ -17,18 +17,15 @@ libgstnxvideoenc_la_SOURCES = gstnxvideoenc.c
 libgstnxvideoenc_la_CFLAGS =\
 	$(GST_CFLAGS)			\
 	-I${includedir} \
-	-I${includedir}/libdrm \
-	-I../../sysroot/include	\
-	-I../../sysroot/include/libdrm
+	-I${includedir}/libdrm
 
 libgstnxvideoenc_la_LIBADD = \
 	$(GST_LIBS)			\
 	-lgstvideo-1.0		\
 	-lgstpbutils-1.0	\
-	-L../../sysroot/lib	\
 	-lnx_video_api
 
-libgstnxvideoenc_la_LDFLAGS = $(GST_PLUGIN_LDFLAGS)
+libgstnxvideoenc_la_LDFLAGS = $(GST_PLUGIN_LDFLAGS) -L$(libdir)
 libgstnxvideoenc_la_LIBTOOLFLAGS = --tag=disable-static
 
 # headers we need but don't want installed
