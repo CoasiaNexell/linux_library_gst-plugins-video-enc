@@ -78,7 +78,7 @@ static GstFlowReturn gst_nxvideoenc_finish (GstVideoEncoder *encoder);
 #define MAX_IMAGE_HEIGHT		1088
 
 #define DEFAULT_CODEC           V4L2_PIX_FMT_H264
-#define DEFAULT_BITRATE         1000 * 1024
+#define DEFAULT_BITRATE         3000 * 1024
 #define DEFAULT_IMAGE_FORMAT	V4L2_PIX_FMT_YUV420M
 
 enum
