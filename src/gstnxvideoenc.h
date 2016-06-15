@@ -40,6 +40,8 @@ typedef struct _GstNxvideoencClass	GstNxvideoencClass;
 #define MAX_INPUT_BUFFER	32
 #define MAX_ALLOC_BUFFER	8
 
+#define MAX_STRING_SIZE		128
+
 struct _GstNxvideoenc
 {
 	GstVideoEncoder base_nxvideoenc;
@@ -75,12 +77,14 @@ struct _GstNxvideoenc
 	guint rotAngle;
 	guint mirDirection;
 	guint jpgQuality;
+
+	gchar stream_format[MAX_STRING_SIZE];
+	gchar alignment[MAX_STRING_SIZE];
 };
 
 struct _GstNxvideoencClass
 {
 	GstVideoEncoderClass base_nxvideoenc_class;
-	GstPadTemplate *srctempl;
 };
 
 GType gst_nxvideoenc_get_type (void);

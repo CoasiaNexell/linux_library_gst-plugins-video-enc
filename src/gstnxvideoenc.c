@@ -81,6 +81,8 @@ static GstFlowReturn gst_nxvideoenc_finish (GstVideoEncoder *encoder);
 #define DEFAULT_BITRATE         3000 * 1024
 #define DEFAULT_IMAGE_FORMAT	V4L2_PIX_FMT_YUV420M
 
+#define	H264_AU_LENGTH_SIZE		4
+
 enum
 {
 	PROP_0,
@@ -118,7 +120,7 @@ static GstStaticPadTemplate gst_nxvideoenc_src_template =
 			"width = (int) [ 64, 1920 ], "
 			"height = (int) [ 64, 1088 ], "
 			"framerate = (fraction) [ 0/1, 30/1 ], "
-			"stream-format = (string) byte-stream, "
+			"stream-format = (string) { byte-stream, avc }, "
 			"alignment = (string) au; "
 
 			"video/x-h263, "
@@ -461,16 +463,292 @@ gst_nxvideoenc_stop( GstVideoEncoder *encoder )
 }
 
 static gboolean
+h264_split_nal( guchar *in_buf, gint in_len, guchar **out_buf, gint *out_len )
+{
+	gint i, pos = 0;
+	gboolean valid = FALSE;
+
+	for( i = 0; i < in_len - 3; i++ )
+	{
+		if( (in_buf[i] == 0x00) && (in_buf[i + 1] == 0x00) && (in_buf[i + 2] == 0x01) )
+		{
+			if( valid ) break;
+
+			*out_buf = in_buf + i;
+
+			valid = TRUE;
+			pos = i;
+		}
+	}
+
+	if( i == in_len - 3 )
+	{
+		*out_len = in_len - pos;
+	}
+	else
+	{
+		if( i != 0 && in_buf[i-1] == 0 )
+		{
+			i--;
+		}
+
+		*out_len = i - pos;
+	}
+
+	return valid;
+}
+
+// in_buf format = nal start code + sps + nal start code + pps
+static gboolean
+h264_find_spspps_stream( guchar *in_buf, gint in_size, guchar **sps, gint *sps_len, guchar **pps, gint *pps_len )
+{
+	guchar *buf = in_buf;
+	gint size = in_size;
+
+	// find nal start code for sps
+	if( FALSE == h264_split_nal( buf, size, sps, sps_len ) )
+	{
+		return FALSE;
+	}
+
+	// remove 3byte nal start code
+	*sps     = *sps     + 3;
+	*sps_len = *sps_len - 3;
+
+	if( FALSE == h264_split_nal( in_buf + *sps_len + 3, in_size - *sps_len - 3, pps, pps_len ) )
+	{
+		return FALSE;
+	}
+
+	// remove 3byte nal start code
+	*pps     = *pps     + 3;
+	*pps_len = *pps_len - 3;
+
+	return TRUE;
+}
+
+static GstBuffer*
+h264_get_header( GstVideoEncoder *encoder )
+{
+	GstNxvideoenc *nxvideoenc = GST_NXVIDEOENC( encoder );
+
+	NX_V4L2ENC_HANDLE enc = NULL;
+	NX_V4L2ENC_PARA param;
+
+	guchar *buf = NULL, *ptr = NULL;;
+	gint buf_size = 0;
+
+	guchar *seq_buf = NULL;
+	gint seq_size = 0;
+
+	GstBuffer *header_buffer;
+
+	guchar *sps = NULL, *pps = NULL;
+	gint sps_len = 0, pps_len = 0;
+
+	memset( &param, 0x00, sizeof(NX_V4L2ENC_PARA) );
+	param.width              = nxvideoenc->width;
+	param.height             = nxvideoenc->height;
+	param.keyFrmInterval     = nxvideoenc->keyFrmInterval ? (nxvideoenc->keyFrmInterval) : (nxvideoenc->fpsNum / nxvideoenc->fpsDen);
+	param.fpsNum             = nxvideoenc->fpsNum;
+	param.fpsDen             = nxvideoenc->fpsDen;
+	param.profile            = (nxvideoenc->codec == V4L2_PIX_FMT_H263) ? V4L2_MPEG_VIDEO_H263_PROFILE_P3 : 0;
+	param.bitrate            = nxvideoenc->bitrate;
+	param.maximumQp          = nxvideoenc->maximumQp;
+	param.initialQp          = nxvideoenc->initialQp;
+	param.imgFormat          = nxvideoenc->imgFormat;
+	param.imgBufferNum       = nxvideoenc->imgBufferNum;
+	param.imgPlaneNum        = 3;
+
+	enc = NX_V4l2EncOpen( nxvideoenc->codec );
+	if( NULL == enc )
+	{
+		GST_ERROR("Fail, NX_V4l2EncOpen().\n");
+		return NULL;
+	}
+
+	if( 0 > NX_V4l2EncInit( enc, &param ) )
+	{
+		GST_ERROR("Fail, NX_V4l2EncInit().\n");
+		NX_V4l2EncClose( enc );
+		return NULL;
+	}
+
+	NX_V4l2EncGetSeqInfo( enc, &seq_buf, &seq_size );
+
+	// seq_buf format = nal start code + sps + nal start code + pps
+	if( FALSE == h264_find_spspps_stream( seq_buf, seq_size, &sps, &sps_len, &pps, &pps_len ) )
+	{
+		GST_ERROR("Fail, Not Found SPS/PPS.\n");
+		return NULL;
+	}
+
+	buf_size += sps_len + pps_len + 11;
+	buf = g_malloc( buf_size * sizeof(guchar) );
+	ptr = buf;
+
+	// make avcC information
+	*ptr++ = 0x01;
+	*ptr++ = sps[1];									// profile
+	*ptr++ = sps[2];									// compatibility
+	*ptr++ = sps[3];									// level
+	*ptr++ = ( 0x3F << 2 ) | (H264_AU_LENGTH_SIZE - 1);	// length size - 1 --> 4 length size
+	*ptr++ = 0xE0 | 1;									// number of sps : 1
+	*ptr++ = sps_len >> 8;								// length of sps : 2 bytes
+	*ptr++ = sps_len & 0xFF;
+
+	memcpy( ptr, sps, sps_len );
+	ptr += sps_len;
+
+	*ptr++ = 1;					// number of pps : 1
+	*ptr++ = pps_len >> 8;		// length of pps : 2bytes
+	*ptr++ = pps_len & 0xFF;
+
+	memcpy( ptr, pps, pps_len );
+	ptr += pps_len;
+
+	header_buffer = gst_buffer_new_and_alloc( buf_size );
+	gst_buffer_fill( header_buffer, 0, buf, buf_size );
+	g_free( buf );
+
+	NX_V4l2EncClose( enc );
+
+	return header_buffer;
+}
+
+static GstCaps*
+get_encoder_src_caps( GstVideoEncoder *encoder )
+{
+	GstNxvideoenc *nxvideoenc = GST_NXVIDEOENC( encoder );
+
+	GstCaps *caps = NULL;
+	GstCaps *src_caps = NULL;
+
+	gint caps_num;
+
+	caps = gst_static_pad_template_get_caps( &gst_nxvideoenc_src_template );
+	for( caps_num = 0; caps_num < gst_caps_get_size( caps ); caps_num++ )
+	{
+		GstStructure *src_structure = gst_caps_get_structure( caps, caps_num );
+		if( src_structure )
+		{
+			if( !g_strcmp0( get_codec_name(nxvideoenc->codec), gst_structure_get_name(src_structure)) )
+			{
+				src_caps = gst_caps_copy_nth( caps, caps_num );
+				gst_caps_make_writable(src_caps);
+				break;
+			}
+		}
+	}
+	gst_caps_unref( caps );
+
+	if( NULL == src_caps )
+	{
+		return NULL;
+	}
+
+	caps = gst_pad_peer_query_caps( GST_VIDEO_ENCODER_SRC_PAD(encoder), NULL );
+	if( caps && !gst_caps_is_any(caps) )
+	{
+		for( caps_num = 0; caps_num < gst_caps_get_size(caps); caps_num++ )
+		{
+			GstCaps *peer_caps = gst_caps_copy_nth( caps, caps_num );
+			if( !peer_caps && gst_caps_is_empty(peer_caps) )
+				continue;
+
+			GstStructure *peer_structure = gst_caps_get_structure( peer_caps, 0 );
+			if( peer_structure )
+			{
+				if( !g_strcmp0( get_codec_name(nxvideoenc->codec), gst_structure_get_name(peer_structure)) )
+				{
+					if( !g_strcmp0( get_codec_name(nxvideoenc->codec), "video/x-h264") )
+					{
+						GstStructure *src_structure;
+						const gchar *stream_format, *alignment;
+
+
+						src_structure = gst_caps_get_structure( src_caps, 0 );
+
+						stream_format = gst_structure_get_string( peer_structure, "stream-format" );
+						alignment = gst_structure_get_string( peer_structure, "alignment");
+
+						if( NULL != stream_format )
+						{
+							gst_structure_set( src_structure, "stream-format", G_TYPE_STRING, stream_format, NULL );
+							g_strlcpy( nxvideoenc->stream_format, stream_format, MAX_STRING_SIZE );
+						}
+						else
+						{
+							gst_structure_set( src_structure, "stream-format", G_TYPE_STRING, "byte-stream", NULL );
+							g_strlcpy( nxvideoenc->stream_format, "byte-stream", MAX_STRING_SIZE );
+						}
+
+						if( NULL != alignment )
+						{
+							gst_structure_set( src_structure, "alignment", G_TYPE_STRING, alignment, NULL );
+							g_strlcpy( nxvideoenc->alignment, alignment, MAX_STRING_SIZE );
+						}
+						else
+						{
+							gst_structure_set( src_structure, "alignment", G_TYPE_STRING, "au", NULL );
+							g_strlcpy( nxvideoenc->alignment, "au", MAX_STRING_SIZE );
+						}
+
+						if( !g_strcmp0( nxvideoenc->alignment, "au" ) )
+						{
+							GstBuffer *buffer = h264_get_header( encoder );
+							if( NULL != buffer )
+							{
+								gst_structure_set( src_structure, "codec_data", GST_TYPE_BUFFER, buffer, NULL );
+								gst_buffer_unref( buffer );
+							}
+						}
+
+						gst_caps_unref( caps );
+						gst_caps_unref( peer_caps );
+
+						return src_caps;
+					}
+
+					if( !g_strcmp0( get_codec_name(nxvideoenc->codec), "video/x-h263") )
+					{
+
+						gst_caps_unref( caps );
+						gst_caps_unref( peer_caps );
+
+						return src_caps;
+					}
+
+					if( !g_strcmp0( get_codec_name(nxvideoenc->codec), "video/mpeg") )
+					{
+
+						gst_caps_unref( caps );
+						gst_caps_unref( peer_caps );
+
+						return src_caps;
+					}
+				}
+				gst_caps_unref( peer_caps );
+			}
+		}
+	}
+
+	if( NULL != caps )
+	{
+		gst_caps_unref( caps );
+	}
+
+	return NULL;
+}
+
+static gboolean
 gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 {
 	GstNxvideoenc *nxvideoenc = GST_NXVIDEOENC (encoder);
-	GstCaps *caps = NULL;
-	GstCaps *outcaps = NULL;
+	GstCaps *src_caps = NULL;
 	GstStructure *structure = NULL;
-	GstStructure *outstructure = NULL;
 	gint i;
 
-	guint caps_num;
 	gint ret = FALSE;
 
 	GstVideoCodecState *output_state;
@@ -534,32 +812,15 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 	//
 	// Configuration Output Caps
 	//
-	caps = gst_static_pad_template_get_caps( &gst_nxvideoenc_src_template );
-	for( caps_num = 0; caps_num < gst_caps_get_size( caps ); caps_num++ )
+	src_caps = get_encoder_src_caps( encoder );
+	if( src_caps != NULL )
 	{
-		outstructure = gst_caps_get_structure( caps, caps_num );
-		if( outstructure )
-		{
-			if( !strcmp( get_codec_name(nxvideoenc->codec), gst_structure_get_name(outstructure)) )
-			{
-				outcaps = gst_caps_copy_nth( caps, caps_num );
-				break;
-			}
-		}
-		else
-		{
-			return FALSE;
-		}
-	}
-
-	if( outcaps != NULL )
-	{
-		output_state = gst_video_encoder_set_output_state( encoder, outcaps, state );
+		output_state = gst_video_encoder_set_output_state( encoder, src_caps, state );
 		gst_video_codec_state_unref( output_state );
 
 		ret = gst_video_encoder_negotiate( encoder );
 
-		gst_caps_unref( outcaps );
+		gst_caps_unref( src_caps );
 	}
 	else
 	{
@@ -793,12 +1054,27 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 				return GST_FLOW_ERROR;
 			}
 
-			frame->output_buffer = gst_video_encoder_allocate_output_buffer( encoder, iSeqSize + encOut.strmSize );
-			gst_buffer_map( frame->output_buffer, &out_info, GST_MAP_WRITE );
+			if( !g_strcmp0( nxvideoenc->alignment, "au" ) )	// H.264 & AU
+			{
+				frame->output_buffer = gst_video_encoder_allocate_output_buffer( encoder, encOut.strmSize );
+				gst_buffer_map( frame->output_buffer, &out_info, GST_MAP_WRITE );
 
-			if( 0 < iSeqSize ) memcpy( out_info.data, pSeqBuf, iSeqSize );
-			memcpy( out_info.data + iSeqSize, encOut.strmBuf, encOut.strmSize );
-			out_info.size += iSeqSize + encOut.strmSize;
+				out_info.size = encOut.strmSize;
+				memcpy( out_info.data, encOut.strmBuf, encOut.strmSize );
+
+				// Nexell H.264 encoder output format : nal start code + 1 slice
+				// Remark au size instead of nal start code
+				GST_WRITE_UINT32_BE( out_info.data, encOut.strmSize - H264_AU_LENGTH_SIZE );
+			}
+			else // mpeg4 / h.263 / h.264 nal type
+			{
+				frame->output_buffer = gst_video_encoder_allocate_output_buffer( encoder, iSeqSize + encOut.strmSize );
+				gst_buffer_map( frame->output_buffer, &out_info, GST_MAP_WRITE );
+
+				if( 0 < iSeqSize ) memcpy( out_info.data, pSeqBuf, iSeqSize );
+				memcpy( out_info.data + iSeqSize, encOut.strmBuf, encOut.strmSize );
+				out_info.size += iSeqSize + encOut.strmSize;
+			}
 
 			if( PIC_TYPE_I == encOut.frameType )
 			{
@@ -883,12 +1159,27 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 			return GST_FLOW_ERROR;
 		}
 
-		frame->output_buffer = gst_video_encoder_allocate_output_buffer( encoder, iSeqSize + encOut.strmSize );
-		gst_buffer_map( frame->output_buffer, &out_info, GST_MAP_WRITE );
+		if( !g_strcmp0( nxvideoenc->alignment, "au" ) )	// H.264 & AU
+		{
+			frame->output_buffer = gst_video_encoder_allocate_output_buffer( encoder, encOut.strmSize );
+			gst_buffer_map( frame->output_buffer, &out_info, GST_MAP_WRITE );
 
-		if( 0 < iSeqSize ) memcpy( out_info.data, pSeqBuf, iSeqSize );
-		memcpy( out_info.data + iSeqSize, encOut.strmBuf, encOut.strmSize );
-		out_info.size += iSeqSize + encOut.strmSize;
+			out_info.size = encOut.strmSize;
+			memcpy( out_info.data, encOut.strmBuf, encOut.strmSize );
+
+			// Nexell H.264 encoder output format : nal start code + 1 slice
+			// Remark au size instead of nal start code
+			GST_WRITE_UINT32_BE( out_info.data, encOut.strmSize - H264_AU_LENGTH_SIZE );
+		}
+		else // mpeg4 / h.263 / h.264 nal type
+		{
+			frame->output_buffer = gst_video_encoder_allocate_output_buffer( encoder, iSeqSize + encOut.strmSize );
+			gst_buffer_map( frame->output_buffer, &out_info, GST_MAP_WRITE );
+
+			if( 0 < iSeqSize ) memcpy( out_info.data, pSeqBuf, iSeqSize );
+			memcpy( out_info.data + iSeqSize, encOut.strmBuf, encOut.strmSize );
+			out_info.size += iSeqSize + encOut.strmSize;
+		}
 
 		if( PIC_TYPE_I == encOut.frameType )
 		{
