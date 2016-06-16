@@ -751,8 +751,6 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 
 	gint ret = FALSE;
 
-	GstVideoCodecState *output_state;
-
 	GST_DEBUG_OBJECT(nxvideoenc, "set_format");
 
 	if( nxvideoenc->input_state )
@@ -815,8 +813,7 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 	src_caps = get_encoder_src_caps( encoder );
 	if( src_caps != NULL )
 	{
-		output_state = gst_video_encoder_set_output_state( encoder, src_caps, state );
-		gst_video_codec_state_unref( output_state );
+		gst_video_encoder_set_output_state( encoder, src_caps, state );
 
 		ret = gst_video_encoder_negotiate( encoder );
 
