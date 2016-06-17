@@ -55,6 +55,9 @@ struct _GstNxvideoenc
 	guint buf_index;
 	gint buffer_type;
 
+	guchar *seq_buf;
+	gint seq_size;
+
 	guint codec;
 	guint width;
 	guint height;
