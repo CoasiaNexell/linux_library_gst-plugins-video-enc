@@ -74,26 +74,45 @@ static gboolean gst_nxvideoenc_set_format (GstVideoEncoder *encoder, GstVideoCod
 static GstFlowReturn gst_nxvideoenc_handle_frame (GstVideoEncoder *encoder, GstVideoCodecFrame *frame);
 static GstFlowReturn gst_nxvideoenc_finish (GstVideoEncoder *encoder);
 
-#define MAX_IMAGE_WIDTH			1920
-#define MAX_IMAGE_HEIGHT		1088
+#define DEFAULT_CODEC				V4L2_PIX_FMT_H264
+#define DEFAULT_WIDTH				1920
+#define DEFAULT_HEIGHT				1080
+#define DEFAULT_FPS_NUM				30
+#define DEFAULT_FPS_DEN				1
+#define DEFAULT_KEYFRAME_INTERVAL	DEFAULT_FPS_NUM / DEFAULT_FPS_DEN
+#define DEFAULT_BITRATE				3000 * 1024
+#define DEFAULT_MAXIMUM_QP			0
+#define DEFAULT_DISABLE_SKIP		0
+#define DEFAULT_RC_DELAY			0
+#define DEFAULT_RC_VBV_SIZE			0
+#define DEFAULT_GAMMA_FACTOR		0
+#define DEFAULT_INITIAL_QP			0
+#define DEFAULT_INTRA_REFRESH_MBS	0
+#define DEFAULT_SEARCH_RANGE		0
+#define DEFAULT_ENABLE_AU_DELIMITER	FALSE
 
-#define DEFAULT_CODEC           V4L2_PIX_FMT_H264
-#define DEFAULT_BITRATE         3000 * 1024
-#define DEFAULT_IMAGE_FORMAT	V4L2_PIX_FMT_YUV420M
-
-#define	H264_AU_LENGTH_SIZE		4
+#define DEFAULT_IMAGE_FORMAT		V4L2_PIX_FMT_YUV420M
+#define	H264_AU_LENGTH_SIZE			4
 
 enum
 {
 	PROP_0,
-
-	PROP_CODEC,		// H264, H263, MPEG
+	PROP_CODEC,				// video/x-h264, video/x-h263, video/mpeg
 	PROP_WIDTH,
 	PROP_HEIGHT,
 	PROP_FPS_N,
 	PROP_FPS_D,
-	PROP_GOP,
+	PROP_KEYFRAME_INTERVAL,
 	PROP_BITRATE,
+	PROP_MAXIMUM_QP,
+	PROP_DISABLE_SKIP,
+	PROP_RC_DELAY,
+	PROP_RC_VBV_SIZE,
+	PROP_GAMMA_FACTOR,
+	PROP_INITIAL_QP,
+	PROP_INTRA_REFRESH_MBS,
+	PROP_SEARCH_RANGE,
+	PROP_ENABLE_AU_DELIMITER,
 };
 
 /* pad templates */
@@ -117,21 +136,21 @@ static GstStaticPadTemplate gst_nxvideoenc_src_template =
 		GST_PAD_ALWAYS,
 		GST_STATIC_CAPS(
 			"video/x-h264, "
-			"width = (int) [ 64, 1920 ], "
-			"height = (int) [ 64, 1088 ], "
-			"framerate = (fraction) [ 0/1, 30/1 ], "
+			"width = (int) [ 96, 1920 ], "
+			"height = (int) [ 16, 1088 ], "
+			"framerate = (fraction) [ 0/1, 65535/1 ], "
 			"stream-format = (string) { byte-stream, avc }, "
 			"alignment = (string) au; "
 
 			"video/x-h263, "
-			"width = (int) [ 64, 1920 ], "
-			"height = (int) [ 64, 1088 ], "
-			"framerate = (fraction) [ 0/1, 30/1 ]; "
+			"width = (int) [ 96, 1920 ], "
+			"height = (int) [ 16, 1088 ], "
+			"framerate = (fraction) [ 0/1, 65535/1 ]; "
 
 			"video/mpeg, "
-			"width = (int) [ 64, 1920 ], "
-			"height = (int) [ 64, 1088 ], "
-			"framerate = (fraction) [ 0/1, 30/1 ], "
+			"width = (int) [ 96, 1920 ], "
+			"height = (int) [ 16, 1088 ], "
+			"framerate = (fraction) [ 0/1, 65535/1 ], "
 			"mpegversion = (int) 4, "
 			"systemstream = (boolean) FALSE; "
 		)
@@ -178,55 +197,127 @@ gst_nxvideoenc_class_init( GstNxvideoencClass * klass )
 	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_CODEC,
 		g_param_spec_string ("codec", "codec",
 			"codec type",
-			"h264",
+			"video/x-h264",
 			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
 		)
 	);
 
 	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_WIDTH,
 		g_param_spec_uint ("width", "width",
-			"image width",
-			0, MAX_IMAGE_WIDTH, 0,
+			"width of image",
+			96, 1920, DEFAULT_WIDTH,
 			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
 		)
 	);
 
 	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_HEIGHT,
 		g_param_spec_uint ("height", "height",
-			"image height",
-			0, MAX_IMAGE_HEIGHT, 0,
+			"height of image",
+			16, 1088, DEFAULT_HEIGHT,
 			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
 		)
 	);
 
 	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_FPS_N,
 		g_param_spec_uint ("fps-n", "fps-n",
-			"fps numerator",
-			0, G_MAXUINT, 0,
+			"frame per second's numerator",
+			0, G_MAXUINT16, DEFAULT_FPS_NUM,
 			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
 		)
 	);
 
 	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_FPS_D,
 		g_param_spec_uint ("fps-d", "fps-d",
-			"fps denominator",
-			0, G_MAXUINT, 0,
+			"frame per second's denominator",
+			1, G_MAXUINT16, DEFAULT_FPS_DEN,
 			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
 		)
 	);
 
-	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_GOP,
-		g_param_spec_uint ("gop", "gop",
-			"gop ( group of pictures )",
-			0, G_MAXUINT, 0,
+	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_KEYFRAME_INTERVAL,
+		g_param_spec_uint ("key-interval", "key-interval",
+			"size of key frame interval",
+			0, G_MAXUINT, DEFAULT_KEYFRAME_INTERVAL,
 			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
 		)
 	);
 
 	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_BITRATE,
-		g_param_spec_uint ("bitrate", "Bitrate",
-			"bitrate ( bit per second )",
-			1, G_MAXUINT, DEFAULT_BITRATE,
+		g_param_spec_uint ("bitrate", "bitrate",
+			"target bitrate in bits per second",
+			0, G_MAXUINT16 * 1024, DEFAULT_BITRATE,
+			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_MAXIMUM_QP,
+		g_param_spec_uint ("max-qp", "max-qp",
+			"maximum quantization parameter",
+			0, G_MAXUINT, DEFAULT_MAXIMUM_QP,
+			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_DISABLE_SKIP,
+		g_param_spec_uint ("skip", "skip",
+			"disable skip frame mode",
+			0, 1, DEFAULT_DISABLE_SKIP,
+			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_RC_DELAY,
+		g_param_spec_uint ("rc-delay", "rc-delay",
+			"rate control delay",
+			0, G_MAXUINT16, DEFAULT_RC_DELAY,
+			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_RC_VBV_SIZE,
+		g_param_spec_uint ("rc-vbv", "rc-vbv",
+			"reference decoder buffer size in bits",
+			0, G_MAXUINT / 2, DEFAULT_RC_VBV_SIZE,
+			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_GAMMA_FACTOR,
+		g_param_spec_uint ("gamma-factor", "gamma-factor",
+			"user gamma factor",
+			0, G_MAXUINT16 / 2, DEFAULT_GAMMA_FACTOR,
+			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_INITIAL_QP,
+		g_param_spec_uint ("init-qp", "init-qp",
+			"initial quantization parameter",
+			0, 51, DEFAULT_INITIAL_QP,
+			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_INTRA_REFRESH_MBS,
+		g_param_spec_uint ("intra", "intra",
+			"Intra MB refresh number (Cyclic Intera Refresh)",
+			0, 51, DEFAULT_INTRA_REFRESH_MBS,
+			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_SEARCH_RANGE,
+		g_param_spec_uint ("search-range", "search-range",
+			"search range of motion estimation (0 : 128 x 64, 1 : 64 x 32, 2 : 32 x 16, 3 : 16 x 16)",
+			0, 3, DEFAULT_SEARCH_RANGE,
+			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
+		)
+	);
+
+	g_object_class_install_property( G_OBJECT_CLASS (klass), PROP_ENABLE_AU_DELIMITER,
+		g_param_spec_boolean ("au-delimiter", "au-delimiter",
+			"insert access unit delimiter befor NAL unit",
+			DEFAULT_ENABLE_AU_DELIMITER,
 			(GParamFlags) (G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)
 		)
 	);
@@ -258,15 +349,15 @@ gst_nxvideoenc_init( GstNxvideoenc *nxvideoenc )
 	nxvideoenc->fpsDen             = 0;
 	nxvideoenc->profile            = 0;
 	nxvideoenc->bitrate            = DEFAULT_BITRATE;
-	nxvideoenc->maximumQp          = 0;
-	nxvideoenc->disableSkip        = 0;
-	nxvideoenc->RCDelay            = 0;
-	nxvideoenc->rcVbvSize          = 0;
-	nxvideoenc->gammaFactor        = 0;
-	nxvideoenc->initialQp          = 0;
-	nxvideoenc->numIntraRefreshMbs = 0;
-	nxvideoenc->searchRange        = 0;
-	nxvideoenc->enableAUDelimiter  = 0;
+	nxvideoenc->maximumQp          = DEFAULT_MAXIMUM_QP;
+	nxvideoenc->disableSkip        = DEFAULT_DISABLE_SKIP;
+	nxvideoenc->RCDelay            = DEFAULT_RC_DELAY;
+	nxvideoenc->rcVbvSize          = DEFAULT_RC_VBV_SIZE;
+	nxvideoenc->gammaFactor        = DEFAULT_GAMMA_FACTOR;
+	nxvideoenc->initialQp          = DEFAULT_INITIAL_QP;
+	nxvideoenc->numIntraRefreshMbs = DEFAULT_INTRA_REFRESH_MBS;
+	nxvideoenc->searchRange        = DEFAULT_SEARCH_RANGE;
+	nxvideoenc->enableAUDelimiter  = DEFAULT_ENABLE_AU_DELIMITER;
 	nxvideoenc->imgFormat          = DEFAULT_IMAGE_FORMAT;
 	nxvideoenc->imgBufferNum       = MAX_ALLOC_BUFFER;
 	nxvideoenc->rotAngle           = 0;
@@ -325,12 +416,48 @@ gst_nxvideoenc_set_property( GObject * object, guint property_id,
 			nxvideoenc->fpsDen = g_value_get_uint( value );
 			break;
 
-		case PROP_GOP:
+		case PROP_KEYFRAME_INTERVAL:
 			nxvideoenc->keyFrmInterval = g_value_get_uint( value );
 			break;
 
 		case PROP_BITRATE:
 			nxvideoenc->bitrate = g_value_get_uint( value );
+			break;
+
+		case PROP_MAXIMUM_QP:
+			nxvideoenc->maximumQp = g_value_get_uint( value );
+			break;
+
+		case PROP_DISABLE_SKIP:
+			nxvideoenc->disableSkip = g_value_get_uint( value );
+			break;
+
+		case PROP_RC_DELAY:
+			nxvideoenc->RCDelay = g_value_get_uint( value );
+			break;
+
+		case PROP_RC_VBV_SIZE:
+			nxvideoenc->rcVbvSize = g_value_get_uint( value );
+			break;
+
+		case PROP_GAMMA_FACTOR:
+			nxvideoenc->gammaFactor = g_value_get_uint( value );
+			break;
+
+		case PROP_INITIAL_QP:
+			nxvideoenc->initialQp = g_value_get_uint( value );
+			break;
+
+		case PROP_INTRA_REFRESH_MBS:
+			nxvideoenc->numIntraRefreshMbs = g_value_get_uint( value );
+			break;
+
+		case PROP_SEARCH_RANGE:
+			nxvideoenc->searchRange = g_value_get_uint( value );
+			break;
+
+		case PROP_ENABLE_AU_DELIMITER:
+			nxvideoenc->enableAUDelimiter = g_value_get_boolean( value );
 			break;
 
 		default:
@@ -369,12 +496,48 @@ gst_nxvideoenc_get_property( GObject * object, guint property_id,
 			g_value_set_uint( value, nxvideoenc->fpsDen );
 			break;
 
-		case PROP_GOP:
+		case PROP_KEYFRAME_INTERVAL:
 			g_value_set_uint( value, nxvideoenc->keyFrmInterval );
 			break;
 
 		case PROP_BITRATE:
 			g_value_set_uint( value, nxvideoenc->bitrate );
+			break;
+
+		case PROP_MAXIMUM_QP:
+			g_value_set_uint( value, nxvideoenc->maximumQp );
+			break;
+
+		case PROP_DISABLE_SKIP:
+			g_value_set_uint( value, nxvideoenc->disableSkip );
+			break;
+
+		case PROP_RC_DELAY:
+			g_value_set_uint( value, nxvideoenc->RCDelay );
+			break;
+
+		case PROP_RC_VBV_SIZE:
+			g_value_set_uint( value, nxvideoenc->rcVbvSize );
+			break;
+
+		case PROP_GAMMA_FACTOR:
+			g_value_set_uint( value, nxvideoenc->gammaFactor );
+			break;
+
+		case PROP_INITIAL_QP:
+			g_value_set_uint( value, nxvideoenc->initialQp );
+			break;
+
+		case PROP_INTRA_REFRESH_MBS:
+			g_value_set_uint( value, nxvideoenc->numIntraRefreshMbs );
+			break;
+
+		case PROP_SEARCH_RANGE:
+			g_value_set_uint( value, nxvideoenc->searchRange );
+			break;
+
+		case PROP_ENABLE_AU_DELIMITER:
+			g_value_set_boolean( value, nxvideoenc->enableAUDelimiter );
 			break;
 
 		default:
@@ -556,7 +719,14 @@ h264_get_header( GstVideoEncoder *encoder )
 	param.profile            = (nxvideoenc->codec == V4L2_PIX_FMT_H263) ? V4L2_MPEG_VIDEO_H263_PROFILE_P3 : 0;
 	param.bitrate            = nxvideoenc->bitrate;
 	param.maximumQp          = nxvideoenc->maximumQp;
+	param.disableSkip        = nxvideoenc->disableSkip;
+	param.RCDelay            = nxvideoenc->RCDelay;
+	param.rcVbvSize          = nxvideoenc->rcVbvSize;
+	param.gammaFactor        = nxvideoenc->gammaFactor;
 	param.initialQp          = nxvideoenc->initialQp;
+	param.numIntraRefreshMbs = nxvideoenc->numIntraRefreshMbs;
+	param.searchRange        = nxvideoenc->searchRange;
+	param.enableAUDelimiter  = (nxvideoenc->codec == V4L2_PIX_FMT_H264) ? nxvideoenc->enableAUDelimiter : 0;
 	param.imgFormat          = nxvideoenc->imgFormat;
 	param.imgBufferNum       = nxvideoenc->imgBufferNum;
 	param.imgPlaneNum        = 3;
@@ -761,10 +931,16 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 
 	nxvideoenc->input_state = gst_video_codec_state_ref( state );
 
-	nxvideoenc->width  = GST_VIDEO_INFO_WIDTH( &state->info );
-	nxvideoenc->height = GST_VIDEO_INFO_HEIGHT( &state->info );
-	nxvideoenc->fpsNum = GST_VIDEO_INFO_FPS_N( &state->info );
-	nxvideoenc->fpsDen = GST_VIDEO_INFO_FPS_D( &state->info );
+	nxvideoenc->width          = !nxvideoenc->width ? GST_VIDEO_INFO_WIDTH( &state->info )  : nxvideoenc->width;
+	nxvideoenc->height         = !nxvideoenc->height ? GST_VIDEO_INFO_HEIGHT( &state->info ) : nxvideoenc->height;
+	nxvideoenc->fpsNum         = !nxvideoenc->fpsNum ? GST_VIDEO_INFO_FPS_N( &state->info ) : nxvideoenc->fpsNum;
+	nxvideoenc->fpsDen         = !nxvideoenc->fpsDen ? GST_VIDEO_INFO_FPS_D( &state->info ) : nxvideoenc->fpsDen;
+	nxvideoenc->keyFrmInterval = !nxvideoenc->keyFrmInterval ? nxvideoenc->fpsNum / nxvideoenc->fpsDen : nxvideoenc->keyFrmInterval;
+
+	GST_VIDEO_INFO_WIDTH( &state->info )  = nxvideoenc->width;
+	GST_VIDEO_INFO_HEIGHT( &state->info ) = nxvideoenc->height;
+	GST_VIDEO_INFO_FPS_N( &state->info )  = nxvideoenc->fpsNum;
+	GST_VIDEO_INFO_FPS_D( &state->info )  = nxvideoenc->fpsDen;
 
 	structure = gst_caps_get_structure( state->caps, 0 );
 	gst_structure_get_int( structure, "buffer-type", &nxvideoenc->buffer_type );
@@ -977,14 +1153,14 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 				param.profile            = (nxvideoenc->codec == V4L2_PIX_FMT_H263) ? V4L2_MPEG_VIDEO_H263_PROFILE_P3 : 0;
 				param.bitrate            = nxvideoenc->bitrate;
 				param.maximumQp          = nxvideoenc->maximumQp;
-				param.disableSkip        = 0;
-				param.RCDelay            = 0;
-				param.rcVbvSize          = 0;
-				param.gammaFactor        = 0;
+				param.disableSkip        = nxvideoenc->disableSkip;
+				param.RCDelay            = nxvideoenc->RCDelay;
+				param.rcVbvSize          = nxvideoenc->rcVbvSize;
+				param.gammaFactor        = nxvideoenc->gammaFactor;
 				param.initialQp          = nxvideoenc->initialQp;
-				param.numIntraRefreshMbs = 0;
-				param.searchRange        = 0;
-				param.enableAUDelimiter  = 0;
+				param.numIntraRefreshMbs = nxvideoenc->numIntraRefreshMbs;
+				param.searchRange        = nxvideoenc->searchRange;
+				param.enableAUDelimiter  = (nxvideoenc->codec == V4L2_PIX_FMT_H264) ? nxvideoenc->enableAUDelimiter : 0;
 				param.imgFormat          = nxvideoenc->imgFormat;
 				param.imgBufferNum       = nxvideoenc->imgBufferNum;
 				param.imgPlaneNum        = mm_buf->handle_num;
@@ -1040,7 +1216,7 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 			encIn.timeStamp       = 0;
 			encIn.forcedIFrame    = 0;
 			encIn.forcedSkipFrame = 0;
-			encIn.quantParam      = (nxvideoenc->codec == V4L2_PIX_FMT_H264) ? nxvideoenc->initialQp : 10;	// FIX ME!!!
+			encIn.quantParam      = nxvideoenc->initialQp;
 
 			if( 0 > NX_V4l2EncEncodeFrame( nxvideoenc->enc, &encIn, &encOut ) )
 			{
@@ -1110,14 +1286,14 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 			param.profile            = (nxvideoenc->codec == V4L2_PIX_FMT_H263) ? V4L2_MPEG_VIDEO_H263_PROFILE_P3 : 0;
 			param.bitrate            = nxvideoenc->bitrate;
 			param.maximumQp          = nxvideoenc->maximumQp;
-			param.disableSkip        = 0;
-			param.RCDelay            = 0;
-			param.rcVbvSize          = 0;
-			param.gammaFactor        = 0;
+			param.disableSkip        = nxvideoenc->disableSkip;
+			param.RCDelay            = nxvideoenc->RCDelay;
+			param.rcVbvSize          = nxvideoenc->rcVbvSize;
+			param.gammaFactor        = nxvideoenc->gammaFactor;
 			param.initialQp          = nxvideoenc->initialQp;
-			param.numIntraRefreshMbs = 0;
-			param.searchRange        = 0;
-			param.enableAUDelimiter  = 0;
+			param.numIntraRefreshMbs = nxvideoenc->numIntraRefreshMbs;
+			param.searchRange        = nxvideoenc->searchRange;
+			param.enableAUDelimiter  = (nxvideoenc->codec == V4L2_PIX_FMT_H264) ? nxvideoenc->enableAUDelimiter : 0;
 			param.imgFormat          = nxvideoenc->imgFormat;
 			param.imgBufferNum       = nxvideoenc->imgBufferNum;
 			param.imgPlaneNum        = 3;
@@ -1154,7 +1330,7 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 		encIn.imgIndex        = nxvideoenc->buf_index;
 		encIn.forcedIFrame    = 0;
 		encIn.forcedSkipFrame = 0;
-		encIn.quantParam      = (nxvideoenc->codec == V4L2_PIX_FMT_H264) ? nxvideoenc->initialQp : 10;	// FIX ME!!!
+		encIn.quantParam      = nxvideoenc->initialQp;
 
 		nxvideoenc->buf_index = (nxvideoenc->buf_index + 1) % MAX_ALLOC_BUFFER;
 
