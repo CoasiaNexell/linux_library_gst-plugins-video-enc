@@ -125,8 +125,6 @@ static GstStaticPadTemplate gst_nxvideoenc_sink_template =
 		GST_STATIC_CAPS(
 			"video/x-raw, "
 			"format =(string) I420; "
-
-			"video/x-raw, accelerable = (boolean) true; "
 		)
 	);
 
@@ -330,8 +328,8 @@ gst_nxvideoenc_init( GstNxvideoenc *nxvideoenc )
 
 	nxvideoenc->input_state        = NULL;
 	nxvideoenc->init               = FALSE;
+	nxvideoenc->accelerable        = FALSE;
 	nxvideoenc->buf_index          = 0;
-	nxvideoenc->buffer_type        = -1;
 	nxvideoenc->drm_fd             = -1;
 	nxvideoenc->seq_buf            = NULL;
 	nxvideoenc->seq_size           = 0;
@@ -359,13 +357,13 @@ gst_nxvideoenc_init( GstNxvideoenc *nxvideoenc )
 	nxvideoenc->searchRange        = DEFAULT_SEARCH_RANGE;
 	nxvideoenc->enableAUDelimiter  = DEFAULT_ENABLE_AU_DELIMITER;
 	nxvideoenc->imgFormat          = DEFAULT_IMAGE_FORMAT;
-	nxvideoenc->imgBufferNum       = MAX_ALLOC_BUFFER;
+	nxvideoenc->imgBufferNum       = MAX_INPUT_BUFFER;
 	nxvideoenc->rotAngle           = 0;
 	nxvideoenc->mirDirection       = 0;
 	nxvideoenc->jpgQuality         = 0;
 }
 
-gint
+static gint
 get_v4l2_codec( const gchar *codec )
 {
 	gint v4l2_codec = -1;
@@ -376,7 +374,7 @@ get_v4l2_codec( const gchar *codec )
 	return v4l2_codec;
 }
 
-const gchar*
+static const gchar*
 get_codec_name( gint codec )
 {
 	if( codec == V4L2_PIX_FMT_H264 )        return "video/x-h264";
@@ -386,7 +384,7 @@ get_codec_name( gint codec )
 	return NULL;
 }
 
-void
+static void
 gst_nxvideoenc_set_property( GObject * object, guint property_id,
 		const GValue * value, GParamSpec * pspec )
 {
@@ -466,7 +464,7 @@ gst_nxvideoenc_set_property( GObject * object, guint property_id,
 	}
 }
 
-void
+static void
 gst_nxvideoenc_get_property( GObject * object, guint property_id,
 		GValue * value, GParamSpec * pspec )
 {
@@ -546,7 +544,7 @@ gst_nxvideoenc_get_property( GObject * object, guint property_id,
 	}
 }
 
-void
+static void
 gst_nxvideoenc_finalize( GObject * object )
 {
 	GstNxvideoenc *nxvideoenc = GST_NXVIDEOENC (object);
@@ -576,7 +574,7 @@ gst_nxvideoenc_stop( GstVideoEncoder *encoder )
 
 	GST_DEBUG_OBJECT(nxvideoenc, "stop");
 
-	if( MM_VIDEO_BUFFER_TYPE_GEM != nxvideoenc->buffer_type )
+	if( FALSE == nxvideoenc->accelerable )
 	{
 		for( i = 0 ; i < MAX_ALLOC_BUFFER; i++ )
 		{
@@ -728,7 +726,7 @@ h264_get_header( GstVideoEncoder *encoder )
 	param.searchRange        = nxvideoenc->searchRange;
 	param.enableAUDelimiter  = (nxvideoenc->codec == V4L2_PIX_FMT_H264) ? nxvideoenc->enableAUDelimiter : 0;
 	param.imgFormat          = nxvideoenc->imgFormat;
-	param.imgBufferNum       = nxvideoenc->imgBufferNum;
+	param.imgBufferNum       = MAX_INPUT_BUFFER;
 	param.imgPlaneNum        = 3;
 
 	enc = NX_V4l2EncOpen( nxvideoenc->codec );
@@ -917,8 +915,6 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 {
 	GstNxvideoenc *nxvideoenc = GST_NXVIDEOENC (encoder);
 	GstCaps *src_caps = NULL;
-	GstStructure *structure = NULL;
-	gint i;
 
 	gint ret = FALSE;
 
@@ -942,9 +938,6 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 	GST_VIDEO_INFO_FPS_N( &state->info )  = nxvideoenc->fpsNum;
 	GST_VIDEO_INFO_FPS_D( &state->info )  = nxvideoenc->fpsDen;
 
-	structure = gst_caps_get_structure( state->caps, 0 );
-	gst_structure_get_int( structure, "buffer-type", &nxvideoenc->buffer_type );
-
 	if( nxvideoenc->width <= 1 || nxvideoenc->height <= 1 )
 	{
 		GST_ERROR("Fail, Invalid Width( %d ), height( %d )\n", nxvideoenc->width, nxvideoenc->height );
@@ -953,40 +946,6 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 
 	nxvideoenc->drm_fd = open( "/dev/dri/card0", O_RDWR );
 
-	if( MM_VIDEO_BUFFER_TYPE_GEM != nxvideoenc->buffer_type )
-	{
-		for( i = 0;  i < MAX_ALLOC_BUFFER; i++ )
-		{
-			nxvideoenc->inbuf[i] = NX_AllocateVideoMemory(
-				nxvideoenc->width,
-				nxvideoenc->height,
-				(nxvideoenc->imgFormat == V4L2_PIX_FMT_YUV420M) ? 3 : 2,
-				DRM_FORMAT_YUV420,
-				4096
-			);
-
-			if( NULL == nxvideoenc->inbuf[i] )
-			{
-				GST_ERROR("Fail, NX_AllocateVideoMemory().\n");
-				return FALSE;
-			}
-
-			if( 0 != NX_MapVideoMemory( nxvideoenc->inbuf[i] ) )
-			{
-				GST_ERROR("Fail, NX_MapVideoMemory().\n");
-				return FALSE;
-			}
-		}
-		nxvideoenc->imgBufferNum = MAX_ALLOC_BUFFER;
-	}
-	else
-	{
-		nxvideoenc->imgBufferNum = MAX_INPUT_BUFFER;
-	}
-
-	//
-	// Configuration Output Caps
-	//
 	src_caps = get_encoder_src_caps( encoder );
 	if( src_caps != NULL )
 	{
@@ -1003,18 +962,6 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 
 	if( ret == FALSE )
 	{
-		if( MM_VIDEO_BUFFER_TYPE_GEM != nxvideoenc->buffer_type )
-		{
-			for( i = 0;  i < MAX_ALLOC_BUFFER; i++ )
-			{
-				if( NULL != nxvideoenc->inbuf[i] )
-				{
-					NX_FreeVideoMemory( nxvideoenc->inbuf[i] );
-					nxvideoenc->inbuf[i] = NULL;
-				}
-			}
-		}
-
 		if( NULL != nxvideoenc->enc )
 		{
 			NX_V4l2EncClose( nxvideoenc->enc );
@@ -1025,6 +972,12 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 		{
 			gst_video_codec_state_unref( nxvideoenc->input_state );
 			nxvideoenc->input_state = NULL;
+		}
+
+		if( 0 > nxvideoenc->drm_fd )
+		{
+			close( nxvideoenc->drm_fd );
+			nxvideoenc->drm_fd = -1;
 		}
 	}
 
@@ -1119,7 +1072,7 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 
 	gst_video_codec_frame_ref( frame );
 
-	if( MM_VIDEO_BUFFER_TYPE_GEM == nxvideoenc->buffer_type )
+	if( 2 <= gst_buffer_n_memory(frame->input_buffer) )
 	{
 		memset(&in_info, 0, sizeof(GstMapInfo));
 		meta_block = gst_buffer_peek_memory( frame->input_buffer, 0 );
@@ -1162,7 +1115,7 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 				param.searchRange        = nxvideoenc->searchRange;
 				param.enableAUDelimiter  = (nxvideoenc->codec == V4L2_PIX_FMT_H264) ? nxvideoenc->enableAUDelimiter : 0;
 				param.imgFormat          = nxvideoenc->imgFormat;
-				param.imgBufferNum       = nxvideoenc->imgBufferNum;
+				param.imgBufferNum       = MAX_INPUT_BUFFER;
 				param.imgPlaneNum        = mm_buf->handle_num;
 
 				nxvideoenc->enc = NX_V4l2EncOpen( nxvideoenc->codec );
@@ -1182,7 +1135,9 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 				}
 
 				NX_V4l2EncGetSeqInfo( nxvideoenc->enc, &nxvideoenc->seq_buf, &nxvideoenc->seq_size );
+
 				nxvideoenc->init = TRUE;
+				nxvideoenc->accelerable = TRUE;
 			}
 
 			if( NULL == nxvideoenc->inbuf[mm_buf->buffer_index] )
@@ -1275,8 +1230,32 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 	{
 		if( FALSE == nxvideoenc->init )
 		{
+			gint i = 0;
 			NX_V4L2ENC_PARA param;
 			memset( &param, 0x00, sizeof(NX_V4L2ENC_PARA) );
+
+			for( i = 0;  i < MAX_ALLOC_BUFFER; i++ )
+			{
+				nxvideoenc->inbuf[i] = NX_AllocateVideoMemory(
+					nxvideoenc->width,
+					nxvideoenc->height,
+					(nxvideoenc->imgFormat == V4L2_PIX_FMT_YUV420M) ? 3 : 2,
+					DRM_FORMAT_YUV420,
+					4096
+				);
+
+				if( NULL == nxvideoenc->inbuf[i] )
+				{
+					GST_ERROR("Fail, NX_AllocateVideoMemory().\n");
+					return FALSE;
+				}
+
+				if( 0 != NX_MapVideoMemory( nxvideoenc->inbuf[i] ) )
+				{
+					GST_ERROR("Fail, NX_MapVideoMemory().\n");
+					return FALSE;
+				}
+			}
 
 			param.width              = nxvideoenc->width;
 			param.height             = nxvideoenc->height;
@@ -1295,7 +1274,7 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 			param.searchRange        = nxvideoenc->searchRange;
 			param.enableAUDelimiter  = (nxvideoenc->codec == V4L2_PIX_FMT_H264) ? nxvideoenc->enableAUDelimiter : 0;
 			param.imgFormat          = nxvideoenc->imgFormat;
-			param.imgBufferNum       = nxvideoenc->imgBufferNum;
+			param.imgBufferNum       = MAX_ALLOC_BUFFER;
 			param.imgPlaneNum        = 3;
 
 			nxvideoenc->enc = NX_V4l2EncOpen( nxvideoenc->codec );
@@ -1315,6 +1294,7 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 			}
 
 			NX_V4l2EncGetSeqInfo( nxvideoenc->enc, &nxvideoenc->seq_buf, &nxvideoenc->seq_size );
+
 			nxvideoenc->init = TRUE;
 		}
 
