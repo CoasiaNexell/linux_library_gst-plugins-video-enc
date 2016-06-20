@@ -23,6 +23,7 @@ libgstnxvideoenc_la_LIBADD = \
 	$(GST_LIBS)			\
 	-lgstvideo-1.0		\
 	-lgstpbutils-1.0	\
+	-ldrm				\
 	-lnx_video_api
 
 libgstnxvideoenc_la_LDFLAGS = $(GST_PLUGIN_LDFLAGS) -L$(libdir)

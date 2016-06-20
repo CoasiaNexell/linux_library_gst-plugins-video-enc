@@ -617,7 +617,7 @@ gst_nxvideoenc_stop( GstVideoEncoder *encoder )
 
 	if( 0 <= nxvideoenc->drm_fd );
 	{
-		close( nxvideoenc->drm_fd );
+		drmClose( nxvideoenc->drm_fd );
 		nxvideoenc->drm_fd = -1;
 	}
 
@@ -938,13 +938,26 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 	GST_VIDEO_INFO_FPS_N( &state->info )  = nxvideoenc->fpsNum;
 	GST_VIDEO_INFO_FPS_D( &state->info )  = nxvideoenc->fpsDen;
 
-	if( nxvideoenc->width <= 1 || nxvideoenc->height <= 1 )
+	if( nxvideoenc->width < 96 || nxvideoenc->height < 16 )
 	{
 		GST_ERROR("Fail, Invalid Width( %d ), height( %d )\n", nxvideoenc->width, nxvideoenc->height );
 		return FALSE;
 	}
 
-	nxvideoenc->drm_fd = open( "/dev/dri/card0", O_RDWR );
+	nxvideoenc->drm_fd = drmOpen( "nexell", NULL );
+	if( 0 > nxvideoenc->drm_fd )
+	{
+		GST_ERROR("Fail, drmOpen().\n");
+		return FALSE;
+	}
+
+	if( 0 > drmDropMaster(nxvideoenc->drm_fd) )
+	{
+		GST_ERROR("Fail, DRM drmDropMaster().\n");
+		drmClose( nxvideoenc->drm_fd );
+		nxvideoenc->drm_fd = -1;
+		return FALSE;
+	}
 
 	src_caps = get_encoder_src_caps( encoder );
 	if( src_caps != NULL )
@@ -976,7 +989,7 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 
 		if( 0 > nxvideoenc->drm_fd )
 		{
-			close( nxvideoenc->drm_fd );
+			drmClose( nxvideoenc->drm_fd );
 			nxvideoenc->drm_fd = -1;
 		}
 	}
