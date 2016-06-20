@@ -951,13 +951,7 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 		return FALSE;
 	}
 
-	if( 0 > drmDropMaster(nxvideoenc->drm_fd) )
-	{
-		GST_ERROR("Fail, DRM drmDropMaster().\n");
-		drmClose( nxvideoenc->drm_fd );
-		nxvideoenc->drm_fd = -1;
-		return FALSE;
-	}
+	drmDropMaster( nxvideoenc->drm_fd );
 
 	src_caps = get_encoder_src_caps( encoder );
 	if( src_caps != NULL )
