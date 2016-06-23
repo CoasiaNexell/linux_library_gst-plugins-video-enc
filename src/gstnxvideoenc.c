@@ -138,7 +138,7 @@ static GstStaticPadTemplate gst_nxvideoenc_src_template =
 			"height = (int) [ 16, 1088 ], "
 			"framerate = (fraction) [ 0/1, 65535/1 ], "
 			"stream-format = (string) { byte-stream, avc }, "
-			"alignment = (string) au; "
+			"alignment = (string) { au, nal }; "
 
 			"video/x-h263, "
 			"width = (int) [ 96, 1920 ], "
@@ -796,6 +796,11 @@ get_encoder_src_caps( GstVideoEncoder *encoder )
 	gint caps_num;
 
 	caps = gst_static_pad_template_get_caps( &gst_nxvideoenc_src_template );
+	if( NULL == caps )
+	{
+		return NULL;
+	}
+
 	for( caps_num = 0; caps_num < gst_caps_get_size( caps ); caps_num++ )
 	{
 		GstStructure *src_structure = gst_caps_get_structure( caps, caps_num );
@@ -817,7 +822,29 @@ get_encoder_src_caps( GstVideoEncoder *encoder )
 	}
 
 	caps = gst_pad_peer_query_caps( GST_VIDEO_ENCODER_SRC_PAD(encoder), NULL );
-	if( caps && !gst_caps_is_any(caps) )
+	if( NULL == caps )
+	{
+		return NULL;
+	}
+
+	if( TRUE == gst_caps_is_any(caps) )
+	{
+		GstStructure *src_structure;
+		src_structure = gst_caps_get_structure( src_caps, 0 );
+		if( !g_strcmp0( get_codec_name(nxvideoenc->codec), "video/x-h264") )
+		{
+			gst_structure_set( src_structure, "stream-format", G_TYPE_STRING, "byte-stream", NULL );
+			g_strlcpy( nxvideoenc->stream_format, "byte-stream", MAX_STRING_SIZE );
+
+			gst_structure_set( src_structure, "alignment", G_TYPE_STRING, "au", NULL );
+			g_strlcpy( nxvideoenc->alignment, "au", MAX_STRING_SIZE );
+		}
+
+		gst_caps_unref( caps );
+
+		return src_caps;
+	}
+	else
 	{
 		for( caps_num = 0; caps_num < gst_caps_get_size(caps); caps_num++ )
 		{
