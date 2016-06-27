@@ -23,6 +23,7 @@ libgstnxvideoenc_la_LIBADD = \
 	$(GST_LIBS)			\
 	-lgstvideo-1.0		\
 	-lgstpbutils-1.0	\
+	-lnxgstmeta			\
 	-ldrm				\
 	-lnx_video_api
 
