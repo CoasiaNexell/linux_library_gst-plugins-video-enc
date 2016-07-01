@@ -58,8 +58,6 @@
 #include <gstmmvideobuffermeta.h>
 #include "gstnxvideoenc.h"
 
-#define ENABLE_MMVIDEOBUFFER_META	0
-
 GST_DEBUG_CATEGORY_STATIC (gst_nxvideoenc_debug_category);
 #define GST_CAT_DEFAULT gst_nxvideoenc_debug_category
 
@@ -1097,10 +1095,7 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 	GstNxvideoenc *nxvideoenc = GST_NXVIDEOENC (encoder);
 	GstVideoFrame inframe;
 
-#if ENABLE_MMVIDEOBUFFER_META
 	GstMMVideoBufferMeta *meta = NULL;
-#endif
-
 	GstMapInfo in_info;
 	GstMapInfo out_info;
 
@@ -1111,21 +1106,13 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 
 	gst_video_codec_frame_ref( frame );
 
-#if ENABLE_MMVIDEOBUFFER_META
 	meta = gst_buffer_get_mmvideobuffer_meta( frame->input_buffer );
 	if( NULL != meta && meta->memory_index >= 0 )
-#else
-	if( 2 <= gst_buffer_n_memory(frame->input_buffer) )
-#endif
 	{
 		GstMemory *meta_block = NULL;
 		MMVideoBuffer *mm_buf = NULL;
 
-#if ENABLE_MMVIDEOBUFFER_META
 		meta_block = gst_buffer_peek_memory( frame->input_buffer, meta->memory_index );
-#else
-		meta_block = gst_buffer_peek_memory( frame->input_buffer, 0 );
-#endif
 		if( !meta_block )
 		{
 			GST_ERROR("Fail, gst_buffer_peek_memory().\n");
