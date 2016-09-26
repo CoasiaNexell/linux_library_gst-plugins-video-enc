@@ -616,7 +616,7 @@ gst_nxvideoenc_stop( GstVideoEncoder *encoder )
 		nxvideoenc->input_state = NULL;
 	}
 
-	if( 0 <= nxvideoenc->drm_fd );
+	if( 0 <= nxvideoenc->drm_fd )
 	{
 		drmClose( nxvideoenc->drm_fd );
 		nxvideoenc->drm_fd = -1;
