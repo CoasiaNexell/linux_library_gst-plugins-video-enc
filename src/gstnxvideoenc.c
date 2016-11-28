@@ -892,7 +892,7 @@ gst_nxvideoenc_set_format( GstVideoEncoder *encoder, GstVideoCodecState *state )
 		return FALSE;
 	}
 
-	nxvideoenc->drm_fd = drmOpen( "nexell", NULL );
+	nxvideoenc->drm_fd = open( "/dev/dri/card0", O_RDWR );
 	if( 0 > nxvideoenc->drm_fd )
 	{
 		GST_ERROR("Fail, drmOpen().\n");
