@@ -545,86 +545,6 @@ gst_nxvideoenc_get_property( GObject * object, guint property_id,
 	}
 }
 
-static void
-gst_nxvideoenc_finalize( GObject * object )
-{
-	GstNxvideoenc *nxvideoenc = GST_NXVIDEOENC (object);
-
-	GST_DEBUG_OBJECT (nxvideoenc, "finalize");
-
-	/* clean up object here */
-
-	G_OBJECT_CLASS (gst_nxvideoenc_parent_class)->finalize (object);
-}
-
-static gboolean
-gst_nxvideoenc_start( GstVideoEncoder *encoder )
-{
-	GstNxvideoenc *nxvideoenc = GST_NXVIDEOENC (encoder);
-
-	GST_DEBUG_OBJECT(nxvideoenc, "start");
-
-	return TRUE;
-}
-
-static gboolean
-gst_nxvideoenc_stop( GstVideoEncoder *encoder )
-{
-	GstNxvideoenc *nxvideoenc = GST_NXVIDEOENC (encoder);
-	gint i, j;
-
-	GST_DEBUG_OBJECT(nxvideoenc, "stop");
-
-	if( FALSE == nxvideoenc->accelerable )
-	{
-		for( i = 0 ; i < MAX_ALLOC_BUFFER; i++ )
-		{
-			if( NULL != nxvideoenc->inbuf[i] )
-			{
-				NX_FreeVideoMemory( nxvideoenc->inbuf[i] );
-				nxvideoenc->inbuf[i] = NULL;
-			}
-		}
-	}
-	else
-	{
-		for( i = 0; i < MAX_INPUT_BUFFER; i++ )
-		{
-			if( NULL != nxvideoenc->inbuf[i] )
-			{
-				for( j = 0; j < nxvideoenc->inbuf[i]->planes; j++ )
-				{
-					close( nxvideoenc->inbuf[i]->gemFd[j] );
-					close( nxvideoenc->inbuf[i]->dmaFd[j] );
-				}
-
-				free( nxvideoenc->inbuf[i] );
-				nxvideoenc->inbuf[i] = NULL;
-			}
-		}
-	}
-
-	if( NULL != nxvideoenc->enc )
-	{
-		NX_V4l2EncClose( nxvideoenc->enc );
-		nxvideoenc->enc = NULL;
-	}
-
-	if( NULL != nxvideoenc->input_state )
-	{
-		gst_video_codec_state_unref( nxvideoenc->input_state );
-		nxvideoenc->input_state = NULL;
-	}
-
-	if( 0 <= nxvideoenc->drm_fd )
-	{
-		drmClose( nxvideoenc->drm_fd );
-		nxvideoenc->drm_fd = -1;
-	}
-
-	return TRUE;
-}
-
 static gboolean
 h264_split_nal( guchar *in_buf, gint in_len, guchar **out_buf, gint *out_len )
 {
@@ -1076,6 +996,18 @@ static int gem_to_dmafd(int fd, int gem_fd)
 	return arg.fd;
 }
 
+static int gem_close( int fd, int gem_fd )
+{
+	struct drm_gem_close arg = { 0, };
+
+	arg.handle = gem_fd;
+	if (drm_ioctl(fd, DRM_IOCTL_GEM_CLOSE, &arg)) {
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int import_gem_from_flink( int fd, unsigned int flink_name )
 {
 	struct drm_gem_open arg = { 0, };
@@ -1087,6 +1019,89 @@ static int import_gem_from_flink( int fd, unsigned int flink_name )
 	}
 
 	return arg.handle;
+}
+
+static void
+gst_nxvideoenc_finalize( GObject * object )
+{
+	GstNxvideoenc *nxvideoenc = GST_NXVIDEOENC (object);
+
+	GST_DEBUG_OBJECT (nxvideoenc, "finalize");
+
+	/* clean up object here */
+
+	G_OBJECT_CLASS (gst_nxvideoenc_parent_class)->finalize (object);
+}
+
+static gboolean
+gst_nxvideoenc_start( GstVideoEncoder *encoder )
+{
+	GstNxvideoenc *nxvideoenc = GST_NXVIDEOENC (encoder);
+
+	GST_DEBUG_OBJECT(nxvideoenc, "start");
+
+	return TRUE;
+}
+
+static gboolean
+gst_nxvideoenc_stop( GstVideoEncoder *encoder )
+{
+	GstNxvideoenc *nxvideoenc = GST_NXVIDEOENC (encoder);
+	gint i, j;
+
+	GST_DEBUG_OBJECT(nxvideoenc, "stop");
+
+	if( FALSE == nxvideoenc->accelerable )
+	{
+		for( i = 0 ; i < MAX_ALLOC_BUFFER; i++ )
+		{
+			if( NULL != nxvideoenc->inbuf[i] )
+			{
+				NX_FreeVideoMemory( nxvideoenc->inbuf[i] );
+				nxvideoenc->inbuf[i] = NULL;
+			}
+		}
+	}
+	else
+	{
+		for( i = 0; i < MAX_INPUT_BUFFER; i++ )
+		{
+			if( NULL != nxvideoenc->inbuf[i] )
+			{
+				for( j = 0; j < nxvideoenc->inbuf[i]->planes; j++ )
+				{
+					gem_close(nxvideoenc->drm_fd, nxvideoenc->inbuf[i]->gemFd[j] );
+					close( nxvideoenc->inbuf[i]->dmaFd[j] );
+				}
+
+				free( nxvideoenc->inbuf[i] );
+				nxvideoenc->inbuf[i] = NULL;
+			}
+		}
+	}
+
+	if( NULL != nxvideoenc->enc )
+	{
+GST_DEBUG_OBJECT(nxvideoenc, "NX_V4l2EncClose ++");
+		NX_V4l2EncClose( nxvideoenc->enc );
+GST_DEBUG_OBJECT(nxvideoenc, "NX_V4l2EncClose --");
+		nxvideoenc->enc = NULL;
+	}
+
+	if( NULL != nxvideoenc->input_state )
+	{
+		gst_video_codec_state_unref( nxvideoenc->input_state );
+		nxvideoenc->input_state = NULL;
+	}
+
+	if( 0 <= nxvideoenc->drm_fd )
+	{
+		drmClose( nxvideoenc->drm_fd );
+		nxvideoenc->drm_fd = -1;
+	}
+	GST_DEBUG_OBJECT(nxvideoenc, "stop --");
+
+	return TRUE;
 }
 
 static GstFlowReturn
@@ -1128,7 +1143,7 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 		}
 		else
 		{
-			GST_DEBUG_OBJECT( nxvideoenc, "type: 0x%x, width: %d, height: %d, plane_num: %d, handle_num: %d, index: %d\n",
+			GST_DEBUG_OBJECT( nxvideoenc, "type: 0x%x, width: %d, height: %d, plane_num: %d, handle_num: %d, index: %d",
 					mm_buf->type, mm_buf->width[0], mm_buf->height[0], mm_buf->plane_num, mm_buf->handle_num, mm_buf->buffer_index );
 
 			if( FALSE == nxvideoenc->init )
