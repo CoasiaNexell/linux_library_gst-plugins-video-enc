@@ -1,5 +1,5 @@
 Name:    gst-plugins-video-enc
-Version: 1.0.0
+Version: 1.0.1
 Release: 1
 License: LGPLv2+
 Summary: nexell video encoder gstreamer plugin
