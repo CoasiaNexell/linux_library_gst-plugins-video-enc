@@ -177,9 +177,9 @@ gst_nxvideoenc_class_init( GstNxvideoencClass * klass )
 			gst_static_pad_template_get(&gst_nxvideoenc_src_template) );
 
 	gst_element_class_set_static_metadata (GST_ELEMENT_CLASS(klass),
-		"S5P6818 H/W Video Encoder",
+		"S5PXX18 H/W Video Encoder",
 		"Codec/Encoder/Video",
-		"Nexell H/W Video Encoder for S5P6818",
+		"Nexell H/W Video Encoder for S5PXX18",
 		"Biela.Jo <doriya@nexell.co.kr>"
 	);
 
@@ -1131,6 +1131,63 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 			GST_DEBUG_OBJECT( nxvideoenc, "type: 0x%x, width: %d, height: %d, plane_num: %d, handle_num: %d, index: %d\n",
 					mm_buf->type, mm_buf->width[0], mm_buf->height[0], mm_buf->plane_num, mm_buf->handle_num, mm_buf->buffer_index );
 
+			if( NULL == nxvideoenc->inbuf[mm_buf->buffer_index] )
+			{
+				gint i;
+				nxvideoenc->inbuf[mm_buf->buffer_index] = (NX_VID_MEMORY_INFO*)malloc( sizeof(NX_VID_MEMORY_INFO) );
+				memset( nxvideoenc->inbuf[mm_buf->buffer_index], 0, sizeof(NX_VID_MEMORY_INFO) );
+
+				nxvideoenc->inbuf[mm_buf->buffer_index]->width      = mm_buf->width[0];
+				nxvideoenc->inbuf[mm_buf->buffer_index]->height     = mm_buf->height[0];
+				nxvideoenc->inbuf[mm_buf->buffer_index]->planes     = mm_buf->handle_num;
+
+				if( mm_buf->handle_num == 1 )
+				{
+					nxvideoenc->inbuf[mm_buf->buffer_index]->format = V4L2_PIX_FMT_YUV420;
+					switch ( mm_buf->plane_num )
+					{
+						case 1:
+							nxvideoenc->inbuf[mm_buf->buffer_index]->gemFd[0]   = import_gem_from_flink( nxvideoenc->drm_fd, mm_buf->handle.gem[0] );
+							nxvideoenc->inbuf[mm_buf->buffer_index]->dmaFd[0]   = gem_to_dmafd( nxvideoenc->drm_fd, nxvideoenc->inbuf[mm_buf->buffer_index]->gemFd[0] );
+							nxvideoenc->inbuf[mm_buf->buffer_index]->size[0]    = mm_buf->size[0];
+							nxvideoenc->inbuf[mm_buf->buffer_index]->pBuffer[0] = mm_buf->data[0];
+							nxvideoenc->inbuf[mm_buf->buffer_index]->stride[0]  = mm_buf->stride_width[0];
+							break;
+						case 3:
+							nxvideoenc->inbuf[mm_buf->buffer_index]->gemFd[0]   = import_gem_from_flink( nxvideoenc->drm_fd, mm_buf->handle.gem[0] );
+							nxvideoenc->inbuf[mm_buf->buffer_index]->dmaFd[0]   = gem_to_dmafd( nxvideoenc->drm_fd, nxvideoenc->inbuf[mm_buf->buffer_index]->gemFd[0] );
+							nxvideoenc->inbuf[mm_buf->buffer_index]->size[0]    = mm_buf->stride_width[0] * mm_buf->stride_height[0];
+							nxvideoenc->inbuf[mm_buf->buffer_index]->pBuffer[0] = mm_buf->data[0];
+							nxvideoenc->inbuf[mm_buf->buffer_index]->stride[0]  = mm_buf->stride_width[0];
+
+							nxvideoenc->inbuf[mm_buf->buffer_index]->gemFd[1]   = nxvideoenc->inbuf[mm_buf->buffer_index]->gemFd[0];
+							nxvideoenc->inbuf[mm_buf->buffer_index]->dmaFd[1]   = nxvideoenc->inbuf[mm_buf->buffer_index]->dmaFd[0];
+							nxvideoenc->inbuf[mm_buf->buffer_index]->size[1]    = mm_buf->stride_width[1] * mm_buf->stride_height[1];
+							nxvideoenc->inbuf[mm_buf->buffer_index]->pBuffer[1] = nxvideoenc->inbuf[mm_buf->buffer_index]->pBuffer[0];// + nxvideoenc->inbuf[mm_buf->buffer_index]->size[0];
+							nxvideoenc->inbuf[mm_buf->buffer_index]->stride[1]  = mm_buf->stride_width[1];
+
+							nxvideoenc->inbuf[mm_buf->buffer_index]->gemFd[2]   = nxvideoenc->inbuf[mm_buf->buffer_index]->gemFd[0];
+							nxvideoenc->inbuf[mm_buf->buffer_index]->dmaFd[2]   = nxvideoenc->inbuf[mm_buf->buffer_index]->dmaFd[0];
+							nxvideoenc->inbuf[mm_buf->buffer_index]->size[2]    = mm_buf->stride_width[2] * mm_buf->stride_height[2];
+							nxvideoenc->inbuf[mm_buf->buffer_index]->pBuffer[2] = nxvideoenc->inbuf[mm_buf->buffer_index]->pBuffer[0];// + nxvideoenc->inbuf[mm_buf->buffer_index]->size[1];
+							nxvideoenc->inbuf[mm_buf->buffer_index]->stride[2]  = mm_buf->stride_width[2];
+							break;
+					}
+				}
+				else
+				{
+					nxvideoenc->inbuf[mm_buf->buffer_index]->format = V4L2_PIX_FMT_YUV420M;
+					for( i = 0; i < mm_buf->plane_num; i++ )
+					{
+						nxvideoenc->inbuf[mm_buf->buffer_index]->gemFd[i]   = import_gem_from_flink( nxvideoenc->drm_fd, mm_buf->handle.gem[i] );
+						nxvideoenc->inbuf[mm_buf->buffer_index]->dmaFd[i]   = gem_to_dmafd( nxvideoenc->drm_fd, nxvideoenc->inbuf[mm_buf->buffer_index]->gemFd[i] );
+						nxvideoenc->inbuf[mm_buf->buffer_index]->size[i]    = mm_buf->size[i];
+						nxvideoenc->inbuf[mm_buf->buffer_index]->pBuffer[i] = mm_buf->data[i];
+						nxvideoenc->inbuf[mm_buf->buffer_index]->stride[i]  = mm_buf->stride_width[i];
+					}
+				}
+			}
+
 			if( FALSE == nxvideoenc->init )
 			{
 				NX_V4L2ENC_PARA param;
@@ -1152,9 +1209,10 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 				param.numIntraRefreshMbs = nxvideoenc->numIntraRefreshMbs;
 				param.searchRange        = nxvideoenc->searchRange;
 				param.enableAUDelimiter  = (nxvideoenc->codec == V4L2_PIX_FMT_H264) ? nxvideoenc->enableAUDelimiter : 0;
-				param.imgFormat          = nxvideoenc->imgFormat;
+				param.imgFormat          = nxvideoenc->inbuf[mm_buf->buffer_index]->format;
 				param.imgBufferNum       = MAX_INPUT_BUFFER;
-				param.imgPlaneNum        = mm_buf->handle_num;
+				param.imgPlaneNum        = mm_buf->plane_num;
+				param.pImage             = nxvideoenc->inbuf[mm_buf->buffer_index];
 
 				nxvideoenc->enc = NX_V4l2EncOpen( nxvideoenc->codec );
 				if( NULL == nxvideoenc->enc )
@@ -1176,31 +1234,6 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 
 				nxvideoenc->init = TRUE;
 				nxvideoenc->accelerable = TRUE;
-			}
-
-			if( NULL == nxvideoenc->inbuf[mm_buf->buffer_index] )
-			{
-				gint i;
-				nxvideoenc->inbuf[mm_buf->buffer_index] = (NX_VID_MEMORY_INFO*)malloc( sizeof(NX_VID_MEMORY_INFO) );
-				memset( nxvideoenc->inbuf[mm_buf->buffer_index], 0, sizeof(NX_VID_MEMORY_INFO) );
-
-				nxvideoenc->inbuf[mm_buf->buffer_index]->width      = mm_buf->width[0];
-				nxvideoenc->inbuf[mm_buf->buffer_index]->height     = mm_buf->height[0];
-				nxvideoenc->inbuf[mm_buf->buffer_index]->planes     = mm_buf->handle_num;
-				nxvideoenc->inbuf[mm_buf->buffer_index]->format     = V4L2_PIX_FMT_YUV420M;
-
-				for( i = 0; i < mm_buf->handle_num; i++ )
-				{
-					nxvideoenc->inbuf[mm_buf->buffer_index]->size[i]    = mm_buf->size[i];
-					nxvideoenc->inbuf[mm_buf->buffer_index]->pBuffer[i] = mm_buf->data[i];
-					nxvideoenc->inbuf[mm_buf->buffer_index]->gemFd[i]   = import_gem_from_flink( nxvideoenc->drm_fd, mm_buf->handle.gem[i] );
-					nxvideoenc->inbuf[mm_buf->buffer_index]->dmaFd[i]   = gem_to_dmafd( nxvideoenc->drm_fd, nxvideoenc->inbuf[mm_buf->buffer_index]->gemFd[i] );
-				}
-
-				for( i = 0; i < mm_buf->plane_num; i++ )
-				{
-					nxvideoenc->inbuf[mm_buf->buffer_index]->stride[i]  = mm_buf->stride_width[i];
-				}
 			}
 
 			memset( &encIn, 0x00, sizeof(encIn) );
@@ -1311,9 +1344,11 @@ gst_nxvideoenc_handle_frame( GstVideoEncoder *encoder, GstVideoCodecFrame *frame
 			param.numIntraRefreshMbs = nxvideoenc->numIntraRefreshMbs;
 			param.searchRange        = nxvideoenc->searchRange;
 			param.enableAUDelimiter  = (nxvideoenc->codec == V4L2_PIX_FMT_H264) ? nxvideoenc->enableAUDelimiter : 0;
-			param.imgFormat          = nxvideoenc->imgFormat;
+			param.imgFormat          = nxvideoenc->inbuf[0]->format;
 			param.imgBufferNum       = MAX_ALLOC_BUFFER;
 			param.imgPlaneNum        = 3;
+			param.pImage             = nxvideoenc->inbuf[0];
+
 
 			nxvideoenc->enc = NX_V4l2EncOpen( nxvideoenc->codec );
 			if( NULL == nxvideoenc->enc )
@@ -1438,10 +1473,10 @@ plugin_init( GstPlugin * plugin )
 #define VERSION "0.1.0"
 #endif
 #ifndef PACKAGE
-#define PACKAGE "S5P6818 GStreamer PlugIn"
+#define PACKAGE "S5PXX18 GStreamer PlugIn"
 #endif
 #ifndef PACKAGE_NAME
-#define PACKAGE_NAME "S5P6818 GStreamer PlugIn"
+#define PACKAGE_NAME "S5PXX18 GStreamer PlugIn"
 #endif
 #ifndef GST_PACKAGE_ORIGIN
 #define GST_PACKAGE_ORIGIN "http://www.nexell.co.kr"
@@ -1451,7 +1486,7 @@ GST_PLUGIN_DEFINE(
 	GST_VERSION_MAJOR,
 	GST_VERSION_MINOR,
 	nxvideoenc,
-	"Nexell H/W Video Encoder for S5P6818",
+	"Nexell H/W Video Encoder for S5PXX18",
 	plugin_init, VERSION,
 	"LGPL",
 	PACKAGE_NAME,
