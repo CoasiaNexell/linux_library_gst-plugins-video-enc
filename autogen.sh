@@ -8,3 +8,7 @@ autoreconf --verbose --force --install --make || {
  exit 1;
 }
 
+# single compile example
+# #> source /opt/poky/2.5.1/environment-setup-cortexa9hf-neon-poky-linux-gnueabi
+# #> ./configure --host=arm-poky-linux-gnueabi --prefix=$(SDKTARGETSYSROOT)/usr
+# #> make
